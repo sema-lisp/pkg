@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -11,12 +11,23 @@ use std::sync::Arc;
 use super::ApiError;
 use crate::{
     auth::{
-        create_session, hash_password, validate_email, validate_password, validate_username,
-        verify_password,
+        clear_session_cookie, cookie_secure, create_session, delete_session, hash_password,
+        session_cookie, validate_email, validate_password, validate_username, verify_password,
     },
     entity::user,
     AppState,
 };
+
+/// Read the `session=` value out of a Cookie header, if present.
+fn session_from_cookies(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())?
+        .split(';')
+        .filter_map(|c| c.trim().strip_prefix("session="))
+        .next()
+        .map(|s| s.to_string())
+}
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -29,14 +40,6 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-}
-
-fn session_cookie(session_id: &str) -> String {
-    format!("session={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
-}
-
-fn clear_cookie() -> String {
-    "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string()
 }
 
 pub async fn register(
@@ -77,9 +80,10 @@ pub async fn register(
         None,
     )
     .await;
+    let secure = cookie_secure(&state.config.base_url);
     Ok((
         StatusCode::CREATED,
-        [(header::SET_COOKIE, session_cookie(&session_id))],
+        [(header::SET_COOKIE, session_cookie(&session_id, secure))],
         Json(serde_json::json!({"ok": true, "username": username})),
     ))
 }
@@ -117,17 +121,24 @@ pub async fn login(
     let session_id = create_session(&state.db, row.id)
         .await
         .map_err(|_| ApiError::internal("Failed to create session"))?;
+    let secure = cookie_secure(&state.config.base_url);
     Ok((
         StatusCode::OK,
-        [(header::SET_COOKIE, session_cookie(&session_id))],
+        [(header::SET_COOKIE, session_cookie(&session_id, secure))],
         Json(serde_json::json!({"ok": true, "username": row.username})),
     ))
 }
 
-pub async fn logout() -> impl IntoResponse {
+pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+    // Invalidate the session server-side so a captured cookie can't be
+    // replayed after logout — clearing the cookie alone is not enough.
+    if let Some(session_id) = session_from_cookies(&headers) {
+        delete_session(&state.db, &session_id).await;
+    }
+    let secure = cookie_secure(&state.config.base_url);
     (
         StatusCode::OK,
-        [(header::SET_COOKIE, clear_cookie())],
+        [(header::SET_COOKIE, clear_session_cookie(secure))],
         Json(serde_json::json!({"ok": true})),
     )
 }

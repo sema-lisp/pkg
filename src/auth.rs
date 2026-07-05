@@ -89,6 +89,57 @@ pub async fn create_session(db: &Db, user_id: i64) -> Result<String, sea_orm::Db
     Ok(session_id)
 }
 
+/// Delete a session row so it can no longer authenticate (used on logout).
+/// Best-effort: a DB error here must not block returning a cleared cookie.
+pub async fn delete_session(db: &Db, session_id: &str) {
+    let _ = session::Entity::delete_by_id(session_id.to_string())
+        .exec(db)
+        .await;
+}
+
+/// Whether session cookies should carry the `Secure` attribute, derived from
+/// the deployment's public URL. Enabled on HTTPS so the cookie is never sent
+/// over plaintext; disabled for `http://` (localhost dev) where `Secure`
+/// would prevent the browser from ever storing it.
+pub fn cookie_secure(base_url: &str) -> bool {
+    base_url.starts_with("https://")
+}
+
+/// Build the `Set-Cookie` value for a session, 7-day lifetime.
+/// Must keep Max-Age in sync with the session `expires_at` in [`create_session`].
+pub fn session_cookie(session_id: &str, secure: bool) -> String {
+    let mut c = format!("session={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800");
+    if secure {
+        c.push_str("; Secure");
+    }
+    c
+}
+
+/// Build the `Set-Cookie` value that clears the session cookie.
+pub fn clear_session_cookie(secure: bool) -> String {
+    let mut c = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
+    if secure {
+        c.push_str("; Secure");
+    }
+    c
+}
+
+/// Restrict an OAuth `return_to` to a same-site absolute path, preventing an
+/// open redirect. Anything that isn't a single-slash-rooted path (external
+/// URLs, protocol-relative `//host`, `/\host`, backslash tricks) falls back to
+/// the account page.
+pub fn sanitize_return_to(return_to: &str) -> String {
+    let ok = return_to.starts_with('/')
+        && !return_to.starts_with("//")
+        && !return_to.starts_with("/\\")
+        && !return_to.contains('\\');
+    if ok {
+        return_to.to_string()
+    } else {
+        "/account".to_string()
+    }
+}
+
 pub async fn get_session_user(db: &Db, session_id: &str) -> Option<User> {
     // Find the session and its related user in one query
     let result = session::Entity::find_by_id(session_id.to_string())

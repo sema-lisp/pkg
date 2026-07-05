@@ -365,7 +365,16 @@ pub async fn webhook(
         .ok_or_else(|| ApiError::not_found("No linked package for this repo"))?;
 
     let package_id = pkg.id;
+
+    // A missing/empty webhook secret must never validate: HMAC with an empty
+    // key is attacker-computable, so treat it as a misconfigured package and
+    // refuse rather than accepting a forged signature.
     let webhook_secret = pkg.webhook_secret.unwrap_or_default();
+    if webhook_secret.is_empty() {
+        return Err(ApiError::forbidden(
+            "Package has no webhook secret configured",
+        ));
+    }
 
     // Verify HMAC signature
     let expected_sig = format!("sha256={}", compute_hmac(&webhook_secret, &body));

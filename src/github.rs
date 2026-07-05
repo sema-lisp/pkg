@@ -55,8 +55,11 @@ pub async fn start(
         client_id, state.config.base_url, scopes, oauth_state,
     );
 
-    // Encode mode and return_to in the cookie alongside the CSRF state
-    let cookie_value = format!("{}|{}|{}", oauth_state, params.mode, params.return_to);
+    // Encode mode and return_to in the cookie alongside the CSRF state.
+    // Sanitize return_to to a same-site path so it can't become an open
+    // redirect when the callback consumes it.
+    let return_to = crate::auth::sanitize_return_to(&params.return_to);
+    let cookie_value = format!("{}|{}|{}", oauth_state, params.mode, return_to);
     let cookie = format!(
         "github_oauth_state={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600",
         cookie_value
@@ -116,7 +119,10 @@ pub async fn callback(
     let parts: Vec<&str> = stored_cookie.splitn(3, '|').collect();
     let stored_state = parts.first().copied().unwrap_or("");
     let mode = parts.get(1).copied().unwrap_or("login");
-    let return_to = parts.get(2).copied().unwrap_or("/account");
+    // Re-sanitize on the way out (defense in depth): never Redirect::to an
+    // attacker-controlled absolute/external URL.
+    let return_to = crate::auth::sanitize_return_to(parts.get(2).copied().unwrap_or("/account"));
+    let return_to = return_to.as_str();
 
     if stored_state.is_empty() || stored_state != params.state {
         tracing::error!(
@@ -326,10 +332,8 @@ pub async fn callback(
         return_to
     );
 
-    let session_cookie = format!(
-        "session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",
-        session_id
-    );
+    let secure = crate::auth::cookie_secure(&state.config.base_url);
+    let session_cookie = crate::auth::session_cookie(&session_id, secure);
     let clear_state = "github_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
 
     (

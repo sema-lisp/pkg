@@ -1118,6 +1118,168 @@ async fn test_security_banned_user_cannot_access_endpoints() {
 }
 
 #[tokio::test]
+async fn test_logout_invalidates_session_server_side() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "logoutuser", "logout@example.com").await;
+
+    // Session works before logout
+    let res = get_with_session(app.clone(), "/api/v1/tokens", &session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Log out
+    let res = post_empty_with_session(app.clone(), "/api/v1/auth/logout", &session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // The same session cookie must no longer authenticate — a captured cookie
+    // cannot be replayed after logout.
+    let res = get_with_session(app.clone(), "/api/v1/tokens", &session).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::UNAUTHORIZED,
+        "session must be invalid server-side after logout"
+    );
+}
+
+#[tokio::test]
+async fn test_login_session_cookie_flags() {
+    let (app, _dir) = test_app().await;
+    register_user(app.clone(), "cookieuser", "cookie@example.com").await;
+
+    let res = post_json(
+        app.clone(),
+        "/api/v1/auth/login",
+        serde_json::json!({"username": "cookieuser", "password": "password123"}),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(
+        cookie.contains("HttpOnly"),
+        "session cookie must be HttpOnly"
+    );
+    assert!(
+        cookie.contains("SameSite=Lax"),
+        "session cookie must be SameSite=Lax (CSRF defense)"
+    );
+    // test_app uses an http:// base_url, so Secure must be absent here; it is
+    // covered for https by the cookie_secure unit test below.
+    assert!(
+        !cookie.contains("Secure"),
+        "Secure must be omitted for http base_url"
+    );
+}
+
+#[test]
+fn test_sanitize_return_to_blocks_open_redirect() {
+    use sema_pkg::auth::sanitize_return_to;
+    // Same-site paths pass through
+    assert_eq!(sanitize_return_to("/account"), "/account");
+    assert_eq!(sanitize_return_to("/packages/foo"), "/packages/foo");
+    // External and protocol-relative targets fall back to /account
+    assert_eq!(sanitize_return_to("https://evil.com"), "/account");
+    assert_eq!(sanitize_return_to("//evil.com"), "/account");
+    assert_eq!(sanitize_return_to("/\\evil.com"), "/account");
+    assert_eq!(sanitize_return_to("http://evil.com/x"), "/account");
+    assert_eq!(sanitize_return_to("javascript:alert(1)"), "/account");
+    assert_eq!(sanitize_return_to("/a\\b"), "/account");
+    assert_eq!(sanitize_return_to("evil.com"), "/account");
+}
+
+#[test]
+fn test_cookie_secure_follows_base_url_scheme() {
+    use sema_pkg::auth::{cookie_secure, session_cookie};
+    assert!(cookie_secure("https://pkg.sema-lang.com"));
+    assert!(!cookie_secure("http://localhost:3000"));
+    assert!(session_cookie("abc", true).contains("; Secure"));
+    assert!(!session_cookie("abc", false).contains("Secure"));
+    // Invariants that must hold regardless of Secure
+    let c = session_cookie("abc", true);
+    assert!(c.contains("HttpOnly") && c.contains("SameSite=Lax"));
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_empty_secret() {
+    let (app, state, _dir) = test_app_with_state().await;
+
+    // A GitHub-linked package whose webhook_secret is empty (misconfigured).
+    package::ActiveModel {
+        name: Set("nosecret-pkg".into()),
+        source: Set("github".into()),
+        github_repo: Set(Some("owner/nosecret".into())),
+        webhook_secret: Set(Some(String::new())),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+
+    // A push for a valid tag with any signature must be refused — an empty
+    // secret means HMAC(empty_key, body) is attacker-computable.
+    let payload = serde_json::json!({
+        "ref": "refs/tags/v1.0.0",
+        "repository": {"full_name": "owner/nosecret"}
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/webhooks/github")
+                .header("x-github-event", "push")
+                .header("x-hub-signature-256", "sha256=deadbeef")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = body_json(res).await;
+    assert!(body["error"].as_str().unwrap().contains("secret"));
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_bad_signature() {
+    let (app, state, _dir) = test_app_with_state().await;
+
+    package::ActiveModel {
+        name: Set("secret-pkg".into()),
+        source: Set("github".into()),
+        github_repo: Set(Some("owner/secret".into())),
+        webhook_secret: Set(Some("s3cr3t-webhook-key".into())),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+
+    let payload = serde_json::json!({
+        "ref": "refs/tags/v1.0.0",
+        "repository": {"full_name": "owner/secret"}
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/webhooks/github")
+                .header("x-github-event", "push")
+                .header(
+                    "x-hub-signature-256",
+                    "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = body_json(res).await;
+    assert_eq!(body["error"], "Invalid signature");
+}
+
+#[tokio::test]
 async fn test_admin_cannot_ban_self() {
     let (app, state, _dir) = test_app_with_state().await;
     let admin_session = register_admin(app.clone(), &state, "admin1", "admin1@example.com").await;
