@@ -1,20 +1,8 @@
-use sea_orm::*;
-
-use crate::{
-    crypto,
-    db::Db,
-    entity::{github_sync_log, oauth_connection, package_version},
-};
+use crate::{crypto, db::Db};
 
 /// Fetch the decrypted GitHub access token for a user.
 pub async fn get_github_token(db: &Db, user_id: i64, token_key: &str) -> Option<String> {
-    let row = oauth_connection::Entity::find()
-        .filter(oauth_connection::Column::UserId.eq(user_id))
-        .filter(oauth_connection::Column::Provider.eq("github"))
-        .filter(oauth_connection::Column::RevokedAt.is_null())
-        .one(db)
-        .await
-        .ok()??;
+    let row = crate::dal::oauth::find_active(db, user_id).await.ok()??;
 
     crypto::decrypt(&row.access_token_enc, token_key)
 }
@@ -180,44 +168,27 @@ pub async fn sync_tag(
     let version_str = version.to_string();
 
     // Check if version already exists
-    let exists = package_version::Entity::find()
-        .filter(package_version::Column::PackageId.eq(package_id))
-        .filter(package_version::Column::Version.eq(&version_str))
-        .count(db)
+    let exists = crate::dal::versions::exists(db, package_id, &version_str)
         .await
-        .unwrap_or(0);
+        .unwrap_or(false);
 
-    if exists > 0 {
+    if exists {
         return Ok(false);
     }
 
     let tarball_url = format!("https://api.github.com/repos/{owner}/{repo}/tarball/{tag_name}");
 
-    let version_model = package_version::ActiveModel {
-        package_id: Set(package_id),
-        version: Set(version_str),
-        checksum_sha256: Set(String::new()),
-        blob_key: Set(String::new()),
-        size_bytes: Set(0),
-        sema_version_req: Set(sema_version_req.map(String::from)),
-        tarball_url: Set(Some(tarball_url)),
-        published_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
+    crate::dal::versions::create_github_version(
+        db,
+        package_id,
+        &version_str,
+        tarball_url,
+        sema_version_req.map(String::from),
+    )
+    .await
+    .map_err(|e| format!("Failed to insert version: {e}"))?;
 
-    version_model
-        .insert(db)
-        .await
-        .map_err(|e| format!("Failed to insert version: {e}"))?;
-
-    let log_model = github_sync_log::ActiveModel {
-        package_id: Set(package_id),
-        tag: Set(tag_name.to_string()),
-        status: Set("ok".into()),
-        synced_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
-    let _ = log_model.insert(db).await;
+    let _ = crate::dal::sync_log::record_ok(db, package_id, tag_name).await;
 
     Ok(true)
 }

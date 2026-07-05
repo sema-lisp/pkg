@@ -25,6 +25,7 @@ pub mod owners;
 pub mod packages;
 pub mod reports;
 pub mod sessions;
+pub mod sync_log;
 pub mod time;
 pub mod tokens;
 pub mod users;

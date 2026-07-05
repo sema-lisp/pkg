@@ -52,6 +52,60 @@ pub async fn set_admin<C: ConnectionTrait>(
         .map(|_| ())
 }
 
+/// Look up a user by their GitHub numeric id.
+pub async fn find_by_github_id<C: ConnectionTrait>(
+    db: &C,
+    github_id: i64,
+) -> Result<Option<user::Model>, DbErr> {
+    user::Entity::find()
+        .filter(user::Column::GithubId.eq(github_id))
+        .one(db)
+        .await
+}
+
+/// Look up a user by their unique email.
+pub async fn find_by_email<C: ConnectionTrait>(
+    db: &C,
+    email: &str,
+) -> Result<Option<user::Model>, DbErr> {
+    user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(db)
+        .await
+}
+
+/// Create a user authenticated via GitHub (no password), stamping `created_at`
+/// in Rust. Returns the inserted row.
+pub async fn create_github_user<C: ConnectionTrait>(
+    db: &C,
+    username: &str,
+    email: &str,
+    github_id: i64,
+) -> Result<user::Model, DbErr> {
+    let new_user = user::ActiveModel {
+        username: Set(username.to_string()),
+        email: Set(email.to_string()),
+        github_id: Set(Some(github_id)),
+        created_at: Set(time::now()),
+        ..Default::default()
+    };
+    new_user.insert(db).await
+}
+
+/// Set a user's GitHub numeric id.
+pub async fn set_github_id<C: ConnectionTrait>(
+    db: &C,
+    user_id: i64,
+    github_id: i64,
+) -> Result<(), DbErr> {
+    user::Entity::update_many()
+        .col_expr(user::Column::GithubId, Expr::value(github_id))
+        .filter(user::Column::Id.eq(user_id))
+        .exec(db)
+        .await
+        .map(|_| ())
+}
+
 /// Look up a user by their unique username.
 pub async fn find_by_username<C: ConnectionTrait>(
     db: &C,

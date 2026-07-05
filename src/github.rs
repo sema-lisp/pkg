@@ -4,15 +4,10 @@ use axum::{
     response::{AppendHeaders, IntoResponse, Redirect},
 };
 use rand::RngCore;
-use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::{
-    auth::create_session,
-    entity::{oauth_connection, user},
-    AppState,
-};
+use crate::{auth::create_session, AppState};
 
 fn generate_state() -> String {
     let mut bytes = [0u8; 16];
@@ -209,13 +204,11 @@ pub async fn callback(
         };
 
         // Check if this github_id is already linked to a different user
-        let existing = oauth_connection::Entity::find()
-            .filter(oauth_connection::Column::Provider.eq("github"))
-            .filter(oauth_connection::Column::ProviderUserId.eq(gh_user.id.to_string()))
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten();
+        let existing =
+            crate::dal::oauth::find_by_provider_user_id(&state.db, &gh_user.id.to_string())
+                .await
+                .ok()
+                .flatten();
 
         if let Some(row) = existing {
             if row.user_id != current_user.id {
@@ -239,16 +232,14 @@ pub async fn callback(
         .await;
 
         // Also set github_id on users table if not set
-        let user_model = user::Entity::find_by_id(current_user.id)
-            .one(&state.db)
+        let user_model = crate::dal::users::find_by_id(&state.db, current_user.id)
             .await
             .ok()
             .flatten();
         if let Some(u) = user_model {
             if u.github_id.is_none() {
-                let mut active: user::ActiveModel = u.into();
-                active.github_id = Set(Some(gh_user.id));
-                let _ = active.update(&state.db).await;
+                let _ =
+                    crate::dal::users::set_github_id(&state.db, current_user.id, gh_user.id).await;
             }
         }
 
@@ -348,9 +339,7 @@ async fn find_or_create_user(
     email: &str,
 ) -> Result<i64, String> {
     // Check for existing user by github_id
-    let existing = user::Entity::find()
-        .filter(user::Column::GithubId.eq(github_id))
-        .one(db)
+    let existing = crate::dal::users::find_by_github_id(db, github_id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -359,9 +348,7 @@ async fn find_or_create_user(
     }
 
     // Check if username is taken
-    let username_taken = user::Entity::find()
-        .filter(user::Column::Username.eq(login))
-        .one(db)
+    let username_taken = crate::dal::users::find_by_username(db, login)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -372,9 +359,7 @@ async fn find_or_create_user(
     };
 
     // Check if email is taken
-    let email_taken = user::Entity::find()
-        .filter(user::Column::Email.eq(email))
-        .one(db)
+    let email_taken = crate::dal::users::find_by_email(db, email)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -384,15 +369,9 @@ async fn find_or_create_user(
         email.to_string()
     };
 
-    let new_user = user::ActiveModel {
-        username: Set(username),
-        email: Set(user_email),
-        github_id: Set(Some(github_id)),
-        created_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
-
-    let result = new_user.insert(db).await.map_err(|e| e.to_string())?;
+    let result = crate::dal::users::create_github_user(db, &username, &user_email, github_id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(result.id)
 }
 

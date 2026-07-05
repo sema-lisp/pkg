@@ -5,7 +5,7 @@
 
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait,
-    QueryFilter, Set, Statement,
+    PaginatorTrait, QueryFilter, Set, Statement,
 };
 
 use crate::dal::time;
@@ -20,6 +20,135 @@ pub async fn find_by_name<C: ConnectionTrait>(
         .filter(package::Column::Name.eq(name))
         .one(db)
         .await
+}
+
+/// Total number of packages.
+pub async fn count<C: ConnectionTrait>(db: &C) -> i64 {
+    package::Entity::find().count(db).await.unwrap_or(0) as i64
+}
+
+/// A package summary row for server-rendered listings:
+/// `(name, description, latest_version, published_at)`.
+pub type ListingRow = (String, String, String, String);
+
+fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
+    (
+        r.try_get("", "name").unwrap_or_default(),
+        r.try_get("", "description").unwrap_or_default(),
+        r.try_get("", "latest_version").unwrap_or_default(),
+        r.try_get("", "published_at").unwrap_or_default(),
+    )
+}
+
+/// The most recently published packages, newest first, each paired with its
+/// latest version (highest-id row). `limit` bounds the result. Used by the
+/// homepage.
+pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            r#"SELECT p.name, p.description, pv.version AS latest_version, pv.published_at
+               FROM packages p
+               JOIN package_versions pv ON pv.package_id = p.id
+               WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
+               ORDER BY pv.published_at DESC
+               LIMIT $1"#,
+            [limit.into()],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.iter().map(listing_row).collect()
+}
+
+/// Search packages by name/description for the server-rendered search page,
+/// resolving each hit's latest version and publish time via correlated
+/// subqueries. Differs from [`search`] (the JSON API), which returns
+/// `created_at` instead.
+pub async fn search_page<C: ConnectionTrait>(
+    db: &C,
+    q: &str,
+    limit: i64,
+    offset: i64,
+) -> Vec<ListingRow> {
+    let pattern = format!("%{q}%");
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            r#"SELECT p.name, p.description,
+               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+               FROM packages p
+               WHERE p.name LIKE $1 OR p.description LIKE $2
+               ORDER BY p.name
+               LIMIT $3 OFFSET $4"#,
+            [
+                pattern.clone().into(),
+                pattern.into(),
+                limit.into(),
+                offset.into(),
+            ],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.iter().map(listing_row).collect()
+}
+
+/// Packages owned by `user_id` for the account page, each with its latest
+/// version and publish time, alphabetical by name.
+pub async fn list_for_owner<C: ConnectionTrait>(db: &C, user_id: i64) -> Vec<ListingRow> {
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            r#"SELECT p.name, p.description,
+               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+               FROM packages p
+               JOIN owners o ON o.package_id = p.id
+               WHERE o.user_id = $1
+               ORDER BY p.name"#,
+            [user_id.into()],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.iter().map(listing_row).collect()
+}
+
+/// Find a GitHub-linked package by its `owner/repo` full name (only rows with
+/// `source = 'github'`).
+pub async fn find_github_linked<C: ConnectionTrait>(
+    db: &C,
+    repo_full_name: &str,
+) -> Result<Option<package::Model>, DbErr> {
+    package::Entity::find()
+        .filter(package::Column::GithubRepo.eq(repo_full_name))
+        .filter(package::Column::Source.eq("github"))
+        .one(db)
+        .await
+}
+
+/// Resolve `(id, source, github_repo)` for a package by name, but only if
+/// `user_id` is one of its owners. `github_repo` is empty when unset.
+pub async fn find_owned<C: ConnectionTrait>(
+    db: &C,
+    name: &str,
+    user_id: i64,
+) -> Option<(i64, String, String)> {
+    let row = db
+        .query_one(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            r#"SELECT p.id, p.source, p.github_repo FROM packages p
+               JOIN owners o ON o.package_id = p.id
+               WHERE p.name = $1 AND o.user_id = $2"#,
+            [name.into(), user_id.into()],
+        ))
+        .await
+        .ok()
+        .flatten()?;
+    Some((
+        row.try_get("", "id").unwrap_or_default(),
+        row.try_get("", "source").unwrap_or_default(),
+        row.try_get("", "github_repo").unwrap_or_default(),
+    ))
 }
 
 /// Insert a new upload-sourced package, stamping `created_at` in Rust.
@@ -38,6 +167,46 @@ pub async fn create<C: ConnectionTrait>(
         ..Default::default()
     };
     row.insert(db).await
+}
+
+/// Insert a new GitHub-sourced package (created via repo link), stamping
+/// `created_at` in Rust. Returns the inserted row.
+pub async fn create_github<C: ConnectionTrait>(
+    db: &C,
+    name: &str,
+    description: &str,
+    repository_url: Option<String>,
+    github_repo: &str,
+    webhook_secret: &str,
+) -> Result<package::Model, DbErr> {
+    let row = package::ActiveModel {
+        name: Set(name.to_string()),
+        description: Set(description.to_string()),
+        repository_url: Set(repository_url),
+        source: Set("github".into()),
+        github_repo: Set(Some(github_repo.to_string())),
+        webhook_secret: Set(Some(webhook_secret.to_string())),
+        created_at: Set(time::now()),
+        ..Default::default()
+    };
+    row.insert(db).await
+}
+
+/// Store the raw + rendered README for a package. A no-op if the package no
+/// longer exists.
+pub async fn set_readme<C: ConnectionTrait>(
+    db: &C,
+    package_id: i64,
+    readme_raw: &str,
+    readme_html: &str,
+) -> Result<(), DbErr> {
+    package::Entity::update_many()
+        .col_expr(package::Column::ReadmeRaw, Expr::value(readme_raw))
+        .col_expr(package::Column::ReadmeHtml, Expr::value(readme_html))
+        .filter(package::Column::Id.eq(package_id))
+        .exec(db)
+        .await
+        .map(|_| ())
 }
 
 /// Overwrite a package's description.

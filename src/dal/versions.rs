@@ -31,6 +31,20 @@ pub async fn list_for_package<C: ConnectionTrait>(
         .await
 }
 
+/// All versions of a package ordered by insertion id, newest first — used by
+/// the package page, where "latest" is the highest-id row.
+pub async fn list_for_package_by_id<C: ConnectionTrait>(
+    db: &C,
+    package_id: i64,
+) -> Vec<package_version::Model> {
+    package_version::Entity::find()
+        .filter(package_version::Column::PackageId.eq(package_id))
+        .order_by_desc(package_version::Column::Id)
+        .all(db)
+        .await
+        .unwrap_or_default()
+}
+
 /// Whether `(package_id, version)` already exists.
 pub async fn exists<C: ConnectionTrait>(
     db: &C,
@@ -63,6 +77,29 @@ pub async fn create<C: ConnectionTrait>(
         blob_key: Set(blob_key),
         size_bytes: Set(size_bytes),
         sema_version_req: Set(sema_version_req),
+        published_at: Set(time::now()),
+        ..Default::default()
+    };
+    row.insert(db).await
+}
+
+/// Insert a GitHub-synced version: no on-disk blob (an upstream tarball URL is
+/// stored instead), zero size, empty checksum. `published_at` stamped in Rust.
+pub async fn create_github_version<C: ConnectionTrait>(
+    db: &C,
+    package_id: i64,
+    version: &str,
+    tarball_url: String,
+    sema_version_req: Option<String>,
+) -> Result<package_version::Model, DbErr> {
+    let row = package_version::ActiveModel {
+        package_id: Set(package_id),
+        version: Set(version.to_string()),
+        checksum_sha256: Set(String::new()),
+        blob_key: Set(String::new()),
+        size_bytes: Set(0),
+        sema_version_req: Set(sema_version_req),
+        tarball_url: Set(Some(tarball_url)),
         published_at: Set(time::now()),
         ..Default::default()
     };

@@ -4,15 +4,10 @@ use axum::{
     http::{header, StatusCode},
     response::{Html, IntoResponse, Redirect},
 };
-use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::{
-    auth::get_session_user,
-    entity::{api_token, dependency, oauth_connection, package, package_version, user},
-    AppState,
-};
+use crate::{auth::get_session_user, dal, AppState};
 
 fn render<T: Template>(tmpl: T) -> impl IntoResponse {
     match tmpl.render() {
@@ -186,31 +181,19 @@ pub async fn index(
 ) -> impl IntoResponse {
     let si = get_session_info(&state, &headers).await;
 
-    let total_packages = package::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
+    let total_packages = dal::packages::count(&state.db).await;
 
-    let rows = state
-        .db
-        .query_all(Statement::from_sql_and_values(
-            state.db.get_database_backend(),
-            r#"SELECT p.name, p.description, pv.version, pv.published_at
-           FROM packages p
-           JOIN package_versions pv ON pv.package_id = p.id
-           WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
-           ORDER BY pv.published_at DESC
-           LIMIT ?"#,
-            [10i64.into()],
-        ))
+    let recent = dal::packages::recent(&state.db, 10)
         .await
-        .unwrap_or_default();
-
-    let recent = rows
-        .iter()
-        .map(|r| PackageSummary {
-            name: r.try_get("", "name").unwrap_or_default(),
-            description: r.try_get("", "description").unwrap_or_default(),
-            latest_version: r.try_get("", "version").unwrap_or_default(),
-            published_at: r.try_get("", "published_at").unwrap_or_default(),
-        })
+        .into_iter()
+        .map(
+            |(name, description, latest_version, published_at)| PackageSummary {
+                name,
+                description,
+                latest_version,
+                published_at,
+            },
+        )
         .collect();
 
     render(IndexTemplate {
@@ -237,44 +220,22 @@ pub async fn search(
     let page = params.page.unwrap_or(1).max(1);
     let per_page: i64 = 20;
     let offset = (page - 1) * per_page;
-    let pattern = format!("%{}%", query);
 
-    let rows = state.db.query_all(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        r#"SELECT p.name, p.description,
-           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-           FROM packages p
-           WHERE p.name LIKE ? OR p.description LIKE ?
-           ORDER BY p.name
-           LIMIT ? OFFSET ?"#,
-        [pattern.clone().into(), pattern.clone().into(), per_page.into(), offset.into()],
-    ))
-    .await
-    .unwrap_or_default();
-
-    let packages = rows
-        .iter()
-        .map(|r| PackageSummary {
-            name: r.try_get("", "name").unwrap_or_default(),
-            description: r.try_get("", "description").unwrap_or_default(),
-            latest_version: r.try_get("", "latest_version").unwrap_or_default(),
-            published_at: r.try_get("", "published_at").unwrap_or_default(),
-        })
+    let packages = dal::packages::search_page(&state.db, &query, per_page, offset)
+        .await
+        .into_iter()
+        .map(
+            |(name, description, latest_version, published_at)| PackageSummary {
+                name,
+                description,
+                latest_version,
+                published_at,
+            },
+        )
         .collect();
 
-    let total_row = state
-        .db
-        .query_one(Statement::from_sql_and_values(
-            state.db.get_database_backend(),
-            "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
-            [pattern.clone().into(), pattern.into()],
-        ))
+    let total = dal::packages::search_count(&state.db, &query)
         .await
-        .ok()
-        .flatten();
-    let total: i64 = total_row
-        .and_then(|r| r.try_get("", "cnt").ok())
         .unwrap_or(0);
 
     render(SearchTemplate {
@@ -295,9 +256,7 @@ pub async fn package_detail(
 ) -> impl IntoResponse {
     let si = get_session_info(&state, &headers).await;
 
-    let pkg = package::Entity::find()
-        .filter(package::Column::Name.eq(&name))
-        .one(&state.db)
+    let pkg = dal::packages::find_by_name(&state.db, &name)
         .await
         .ok()
         .flatten();
@@ -316,12 +275,7 @@ pub async fn package_detail(
     let github_repo = pkg.github_repo.clone();
     let readme_html = pkg.readme_html.clone();
 
-    let version_models = package_version::Entity::find()
-        .filter(package_version::Column::PackageId.eq(pkg_id))
-        .order_by_desc(package_version::Column::Id)
-        .all(&state.db)
-        .await
-        .unwrap_or_default();
+    let version_models = dal::versions::list_for_package_by_id(&state.db, pkg_id).await;
 
     let versions: Vec<VersionInfo> = version_models
         .iter()
@@ -337,12 +291,8 @@ pub async fn package_detail(
 
     // Get deps for latest version
     let deps = if let Some(latest) = version_models.first() {
-        let dep_models = dependency::Entity::find()
-            .filter(dependency::Column::VersionId.eq(latest.id))
-            .all(&state.db)
+        dal::deps::list_for_version(&state.db, latest.id)
             .await
-            .unwrap_or_default();
-        dep_models
             .iter()
             .map(|d| DepInfo {
                 dependency_name: d.dependency_name.clone(),
@@ -353,31 +303,11 @@ pub async fn package_detail(
         vec![]
     };
 
-    let owner_rows = state.db.query_all(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        "SELECT u.username FROM users u JOIN owners o ON o.user_id = u.id WHERE o.package_id = ?",
-        [pkg_id.into()],
-    ))
-    .await
-    .unwrap_or_default();
-    let owners: Vec<String> = owner_rows
-        .iter()
-        .map(|r| r.try_get("", "username").unwrap_or_default())
-        .collect();
-
-    let total_row = state
-        .db
-        .query_one(Statement::from_sql_and_values(
-            state.db.get_database_backend(),
-            "SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE package_name = ?",
-            [name.clone().into()],
-        ))
+    let owners = dal::owners::list_usernames(&state.db, pkg_id)
         .await
-        .ok()
-        .flatten();
-    let total_downloads: i64 = total_row
-        .and_then(|r| r.try_get("", "cnt").ok())
-        .unwrap_or(0);
+        .unwrap_or_default();
+
+    let total_downloads = dal::downloads::total(&state.db, &name).await.unwrap_or(0);
 
     render(PackageTemplate {
         username: si.username,
@@ -436,11 +366,7 @@ pub async fn link_page(
         None => return Redirect::to("/login").into_response(),
     };
 
-    let github_row = oauth_connection::Entity::find()
-        .filter(oauth_connection::Column::UserId.eq(user.id))
-        .filter(oauth_connection::Column::Provider.eq("github"))
-        .filter(oauth_connection::Column::RevokedAt.is_null())
-        .one(&state.db)
+    let github_row = dal::oauth::find_active(&state.db, user.id)
         .await
         .ok()
         .flatten();
@@ -481,8 +407,7 @@ pub async fn account(
     };
 
     // Get user details
-    let user_model = user::Entity::find_by_id(user.id)
-        .one(&state.db)
+    let user_model = dal::users::find_by_id(&state.db, user.id)
         .await
         .ok()
         .flatten();
@@ -493,40 +418,22 @@ pub async fn account(
     };
 
     // Get user's packages (JOIN query)
-    let pkg_rows = state.db.query_all(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        r#"SELECT p.name, p.description,
-           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-           FROM packages p
-           JOIN owners o ON o.package_id = p.id
-           WHERE o.user_id = ?
-           ORDER BY p.name"#,
-        [user.id.into()],
-    ))
-    .await
-    .unwrap_or_default();
-
-    let packages = pkg_rows
-        .iter()
-        .map(|r| PackageSummary {
-            name: r.try_get("", "name").unwrap_or_default(),
-            description: r.try_get("", "description").unwrap_or_default(),
-            latest_version: r.try_get("", "latest_version").unwrap_or_default(),
-            published_at: r.try_get("", "published_at").unwrap_or_default(),
-        })
+    let packages = dal::packages::list_for_owner(&state.db, user.id)
+        .await
+        .into_iter()
+        .map(
+            |(name, description, latest_version, published_at)| PackageSummary {
+                name,
+                description,
+                latest_version,
+                published_at,
+            },
+        )
         .collect();
 
     // Get tokens
-    let token_models = api_token::Entity::find()
-        .filter(api_token::Column::UserId.eq(user.id))
-        .filter(api_token::Column::RevokedAt.is_null())
-        .order_by_desc(api_token::Column::CreatedAt)
-        .all(&state.db)
+    let tokens = dal::tokens::list_active_for_user(&state.db, user.id)
         .await
-        .unwrap_or_default();
-
-    let tokens = token_models
         .iter()
         .map(|t| TokenInfo {
             id: t.id,
@@ -537,11 +444,7 @@ pub async fn account(
         .collect();
 
     // Get GitHub connection status
-    let github_row = oauth_connection::Entity::find()
-        .filter(oauth_connection::Column::UserId.eq(user.id))
-        .filter(oauth_connection::Column::Provider.eq("github"))
-        .filter(oauth_connection::Column::RevokedAt.is_null())
-        .one(&state.db)
+    let github_row = dal::oauth::find_active(&state.db, user.id)
         .await
         .ok()
         .flatten();

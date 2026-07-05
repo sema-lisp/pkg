@@ -61,6 +61,32 @@ pub async fn upsert_connection<C: ConnectionTrait>(
         .map(|_| ())
 }
 
+/// The user's active (non-revoked) GitHub connection, if any.
+pub async fn find_active<C: ConnectionTrait>(
+    db: &C,
+    user_id: i64,
+) -> Result<Option<oauth_connection::Model>, DbErr> {
+    oauth_connection::Entity::find()
+        .filter(oauth_connection::Column::UserId.eq(user_id))
+        .filter(oauth_connection::Column::Provider.eq(PROVIDER))
+        .filter(oauth_connection::Column::RevokedAt.is_null())
+        .one(db)
+        .await
+}
+
+/// Find a GitHub connection by the GitHub-side user id (used to detect a
+/// GitHub account already linked to a different local user).
+pub async fn find_by_provider_user_id<C: ConnectionTrait>(
+    db: &C,
+    provider_user_id: &str,
+) -> Result<Option<oauth_connection::Model>, DbErr> {
+    oauth_connection::Entity::find()
+        .filter(oauth_connection::Column::Provider.eq(PROVIDER))
+        .filter(oauth_connection::Column::ProviderUserId.eq(provider_user_id))
+        .one(db)
+        .await
+}
+
 /// Mark a user's GitHub connection revoked (e.g. after a 401 from GitHub).
 pub async fn mark_revoked<C: ConnectionTrait>(db: &C, user_id: i64) -> Result<(), DbErr> {
     oauth_connection::Entity::update_many()

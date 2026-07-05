@@ -6,17 +6,12 @@ use axum::{
     Json,
 };
 use hmac::{Hmac, Mac};
-use sea_orm::*;
 use serde::Deserialize;
 use sha2::Sha256;
 use std::sync::Arc;
 
 use super::ApiError;
-use crate::{
-    auth::AuthUser,
-    entity::{github_sync_log, owner, package},
-    github_sync, AppState,
-};
+use crate::{auth::AuthUser, dal, github_sync, AppState};
 
 #[derive(Deserialize)]
 pub struct LinkRequest {
@@ -74,9 +69,7 @@ pub async fn link(
     crate::api::packages::validate_package_name(&manifest.name).map_err(ApiError::bad_request)?;
 
     // Check if package name is already taken
-    let existing = package::Entity::find()
-        .filter(package::Column::Name.eq(&manifest.name))
-        .one(&state.db)
+    let existing = dal::packages::find_by_name(&state.db, &manifest.name)
         .await
         .ok()
         .flatten();
@@ -93,29 +86,20 @@ pub async fn link(
     let github_repo = format!("{owner_name}/{repo}");
 
     // Create package with source=github
-    let pkg_model = package::ActiveModel {
-        name: Set(manifest.name.clone()),
-        description: Set(manifest.description.clone()),
-        repository_url: Set(Some(format!("https://github.com/{github_repo}"))),
-        source: Set("github".into()),
-        github_repo: Set(Some(github_repo.clone())),
-        webhook_secret: Set(Some(webhook_secret.clone())),
-        created_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
-
-    let package_id = pkg_model
-        .insert(&state.db)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to create package: {e}")))?
-        .id;
+    let package_id = dal::packages::create_github(
+        &state.db,
+        &manifest.name,
+        &manifest.description,
+        Some(format!("https://github.com/{github_repo}")),
+        &github_repo,
+        &webhook_secret,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Failed to create package: {e}")))?
+    .id;
 
     // Add user as owner
-    let owner_model = owner::ActiveModel {
-        package_id: Set(package_id),
-        user_id: Set(user.id),
-    };
-    let _ = owner_model.insert(&state.db).await;
+    let _ = dal::owners::add(&state.db, package_id, user.id).await;
 
     // Register webhook
     let webhook_url = format!("{}/api/v1/webhooks/github", state.config.base_url);
@@ -154,15 +138,7 @@ pub async fn link(
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
-                let log_model = github_sync_log::ActiveModel {
-                    package_id: Set(package_id),
-                    tag: Set(tag_name.clone()),
-                    status: Set("error".into()),
-                    error: Set(Some(e.clone())),
-                    synced_at: Set(crate::dal::time::now()),
-                    ..Default::default()
-                };
-                let _ = log_model.insert(&state.db).await;
+                let _ = dal::sync_log::record_error(&state.db, package_id, tag_name, &e).await;
                 errors.push(format!("{tag_name}: {e}"));
             }
         }
@@ -172,12 +148,7 @@ pub async fn link(
     let readme_raw = github_sync::fetch_readme(&client, &token, &owner_name, &repo).await;
     if let Some(ref raw) = readme_raw {
         let html = github_sync::render_readme(raw);
-        if let Ok(Some(pkg_model)) = package::Entity::find_by_id(package_id).one(&state.db).await {
-            let mut pkg_active: package::ActiveModel = pkg_model.into();
-            pkg_active.readme_raw = Set(Some(raw.clone()));
-            pkg_active.readme_html = Set(Some(html));
-            let _ = pkg_active.update(&state.db).await;
-        }
+        let _ = dal::packages::set_readme(&state.db, package_id, raw, &html).await;
     }
 
     crate::audit::log(
@@ -210,23 +181,13 @@ pub async fn sync(
     AuthUser(user): AuthUser,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let pkg_row = state.db.query_one(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        "SELECT p.id, p.source, p.github_repo FROM packages p JOIN owners o ON o.package_id = p.id WHERE p.name = ? AND o.user_id = ?",
-        [name.clone().into(), user.id.into()],
-    ))
-    .await
-    .ok()
-    .flatten()
-    .ok_or_else(|| ApiError::not_found("Package not found or you are not an owner"))?;
+    let (package_id, source, github_repo) = dal::packages::find_owned(&state.db, &name, user.id)
+        .await
+        .ok_or_else(|| ApiError::not_found("Package not found or you are not an owner"))?;
 
-    let source: String = pkg_row.try_get("", "source").unwrap_or_default();
     if source != "github" {
         return Err(ApiError::bad_request("Package is not GitHub-linked"));
     }
-
-    let package_id: i64 = pkg_row.try_get("", "id").unwrap_or_default();
-    let github_repo: String = pkg_row.try_get("", "github_repo").unwrap_or_default();
 
     let (owner_name, repo) = github_sync::parse_github_url(&github_repo)
         .ok_or_else(|| ApiError::internal("Invalid github_repo in database"))?;
@@ -264,15 +225,7 @@ pub async fn sync(
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
-                let log_model = github_sync_log::ActiveModel {
-                    package_id: Set(package_id),
-                    tag: Set(tag_name.clone()),
-                    status: Set("error".into()),
-                    error: Set(Some(e)),
-                    synced_at: Set(crate::dal::time::now()),
-                    ..Default::default()
-                };
-                let _ = log_model.insert(&state.db).await;
+                let _ = dal::sync_log::record_error(&state.db, package_id, tag_name, &e).await;
             }
         }
     }
@@ -281,12 +234,7 @@ pub async fn sync(
     let readme_raw = github_sync::fetch_readme(&client, &token, &owner_name, &repo).await;
     if let Some(ref raw) = readme_raw {
         let html = github_sync::render_readme(raw);
-        if let Ok(Some(pkg_model)) = package::Entity::find_by_id(package_id).one(&state.db).await {
-            let mut pkg_active: package::ActiveModel = pkg_model.into();
-            pkg_active.readme_raw = Set(Some(raw.clone()));
-            pkg_active.readme_html = Set(Some(html));
-            let _ = pkg_active.update(&state.db).await;
-        }
+        let _ = dal::packages::set_readme(&state.db, package_id, raw, &html).await;
     }
 
     Ok(Json(serde_json::json!({
@@ -364,10 +312,7 @@ pub async fn webhook(
     // Find the package by github_repo. Fold "unknown repo" into the same 403
     // as a bad signature so an unauthenticated caller can't use the status
     // code to enumerate which repos are linked.
-    let pkg = package::Entity::find()
-        .filter(package::Column::GithubRepo.eq(repo_full_name))
-        .filter(package::Column::Source.eq("github"))
-        .one(&state.db)
+    let pkg = dal::packages::find_github_linked(&state.db, repo_full_name)
         .await
         .ok()
         .flatten()
@@ -424,15 +369,7 @@ pub async fn webhook(
             serde_json::json!({"ok": true, "version": version.to_string(), "imported": false, "reason": "already exists"}),
         )),
         Err(e) => {
-            let log_model = github_sync_log::ActiveModel {
-                package_id: Set(package_id),
-                tag: Set(tag_name.to_string()),
-                status: Set("error".into()),
-                error: Set(Some(e.clone())),
-                synced_at: Set(crate::dal::time::now()),
-                ..Default::default()
-            };
-            let _ = log_model.insert(&state.db).await;
+            let _ = dal::sync_log::record_error(&state.db, package_id, tag_name, &e).await;
             Err(ApiError::internal(e))
         }
     }

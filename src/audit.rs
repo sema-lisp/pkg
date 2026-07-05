@@ -1,6 +1,4 @@
 use crate::db::Db;
-use crate::entity::audit_log;
-use sea_orm::{ActiveModelTrait, Set};
 
 /// Log an action to the audit trail. On failure, emits a tracing::error
 /// so audit failures are always observable even if the caller continues.
@@ -18,17 +16,9 @@ pub async fn log(
     target_name: Option<&str>,
     detail: Option<&str>,
 ) {
-    let model = audit_log::ActiveModel {
-        actor: Set(actor.to_string()),
-        action: Set(action.to_string()),
-        target_type: Set(target_type.map(String::from)),
-        target_name: Set(target_name.map(String::from)),
-        detail: Set(detail.map(String::from)),
-        created_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
-
-    if let Err(e) = model.insert(db).await {
+    if let Err(e) =
+        crate::dal::audit_log::record(db, actor, action, target_type, target_name, detail).await
+    {
         tracing::error!(
             error = %e,
             actor = actor,

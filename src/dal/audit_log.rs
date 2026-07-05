@@ -1,11 +1,35 @@
-//! Audit-log read side. Writes live in [`crate::audit`]; this module only reads
-//! back the trail for the admin console.
+//! Audit log. [`record`] appends an entry; [`list`] reads the trail back for
+//! the admin console. [`crate::audit::log`] wraps `record` with failure-logging.
 //!
 //! The listing builds its WHERE clause from static fragment literals, pushing
 //! every user value as a bound parameter, then interpolates only the assembled
 //! fragment string into the query — injection-safe and portable across engines.
 
-use sea_orm::{ConnectionTrait, Statement, Value};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, Set, Statement, Value};
+
+use crate::dal::time;
+use crate::entity::audit_log;
+
+/// Append one audit-trail entry (stamps `created_at`).
+pub async fn record<C: ConnectionTrait>(
+    db: &C,
+    actor: &str,
+    action: &str,
+    target_type: Option<&str>,
+    target_name: Option<&str>,
+    detail: Option<&str>,
+) -> Result<(), sea_orm::DbErr> {
+    let model = audit_log::ActiveModel {
+        actor: Set(actor.to_string()),
+        action: Set(action.to_string()),
+        target_type: Set(target_type.map(String::from)),
+        target_name: Set(target_name.map(String::from)),
+        detail: Set(detail.map(String::from)),
+        created_at: Set(time::now()),
+        ..Default::default()
+    };
+    model.insert(db).await.map(|_| ())
+}
 
 /// Filters for [`list`]. `q` matches actor/target/detail via `LIKE`; `action`
 /// is an exact match. `limit`/`offset` paginate.
