@@ -773,6 +773,7 @@ async fn test_download_github_package_redirects() {
         description: Set("A GitHub package".into()),
         source: Set("github".into()),
         github_repo: Set(Some("testowner/testrepo".into())),
+        created_at: Set(sema_pkg::dal::time::now()),
         ..Default::default()
     }
     .insert(&state.db)
@@ -785,6 +786,7 @@ async fn test_download_github_package_redirects() {
         checksum_sha256: Set(String::new()),
         blob_key: Set(String::new()),
         size_bytes: Set(0),
+        published_at: Set(sema_pkg::dal::time::now()),
         tarball_url: Set(Some(
             "https://api.github.com/repos/testowner/testrepo/tarball/v1.0.0".into(),
         )),
@@ -822,6 +824,7 @@ async fn test_get_package_includes_tarball_url() {
         description: Set("Another GH package".into()),
         source: Set("github".into()),
         github_repo: Set(Some("owner/repo".into())),
+        created_at: Set(sema_pkg::dal::time::now()),
         ..Default::default()
     }
     .insert(&state.db)
@@ -834,6 +837,7 @@ async fn test_get_package_includes_tarball_url() {
         checksum_sha256: Set(String::new()),
         blob_key: Set(String::new()),
         size_bytes: Set(0),
+        published_at: Set(sema_pkg::dal::time::now()),
         tarball_url: Set(Some(
             "https://api.github.com/repos/owner/repo/tarball/v2.0.0".into(),
         )),
@@ -1299,6 +1303,7 @@ async fn test_webhook_rejects_empty_secret() {
         source: Set("github".into()),
         github_repo: Set(Some("owner/nosecret".into())),
         webhook_secret: Set(Some(String::new())),
+        created_at: Set(sema_pkg::dal::time::now()),
         ..Default::default()
     }
     .insert(&state.db)
@@ -1339,6 +1344,7 @@ async fn test_webhook_rejects_bad_signature() {
         source: Set("github".into()),
         github_repo: Set(Some("owner/secret".into())),
         webhook_secret: Set(Some("s3cr3t-webhook-key".into())),
+        created_at: Set(sema_pkg::dal::time::now()),
         ..Default::default()
     }
     .insert(&state.db)

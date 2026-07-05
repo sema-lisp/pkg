@@ -227,28 +227,16 @@ pub async fn callback(
             }
         }
 
-        // Upsert oauth_connections (raw SQL for datetime('now') expression)
-        state.db.execute(Statement::from_sql_and_values(
-            state.db.get_database_backend(),
-            r#"INSERT INTO oauth_connections (user_id, provider, provider_user_id, provider_login, access_token_enc, scopes, updated_at)
-               VALUES (?, 'github', ?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(user_id, provider) DO UPDATE SET
-                 provider_user_id = excluded.provider_user_id,
-                 provider_login = excluded.provider_login,
-                 access_token_enc = excluded.access_token_enc,
-                 scopes = excluded.scopes,
-                 revoked_at = NULL,
-                 updated_at = datetime('now')"#,
-            [
-                current_user.id.into(),
-                gh_user.id.to_string().into(),
-                gh_user.login.clone().into(),
-                token_enc.clone().into(),
-                scopes_str.into(),
-            ],
-        ))
-        .await
-        .ok();
+        // Upsert the GitHub connection (engine-portable via the DAL).
+        let _ = crate::dal::oauth::upsert_connection(
+            &state.db,
+            current_user.id,
+            &gh_user.id.to_string(),
+            &gh_user.login,
+            token_enc.clone(),
+            scopes_str,
+        )
+        .await;
 
         // Also set github_id on users table if not set
         let user_model = user::Entity::find_by_id(current_user.id)
@@ -293,28 +281,16 @@ pub async fn callback(
         }
     };
 
-    // Store token for GitHub-linked packages (raw SQL for datetime('now') expression)
-    state.db.execute(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        r#"INSERT INTO oauth_connections (user_id, provider, provider_user_id, provider_login, access_token_enc, scopes, updated_at)
-           VALUES (?, 'github', ?, ?, ?, ?, datetime('now'))
-           ON CONFLICT(user_id, provider) DO UPDATE SET
-             provider_user_id = excluded.provider_user_id,
-             provider_login = excluded.provider_login,
-             access_token_enc = excluded.access_token_enc,
-             scopes = excluded.scopes,
-             revoked_at = NULL,
-             updated_at = datetime('now')"#,
-        [
-            user_id.into(),
-            gh_user.id.to_string().into(),
-            gh_user.login.clone().into(),
-            token_enc.into(),
-            scopes_str.into(),
-        ],
-    ))
-    .await
-    .ok();
+    // Store the token for GitHub-linked packages (engine-portable via the DAL).
+    let _ = crate::dal::oauth::upsert_connection(
+        &state.db,
+        user_id,
+        &gh_user.id.to_string(),
+        &gh_user.login,
+        token_enc,
+        scopes_str,
+    )
+    .await;
 
     let session_id = match create_session(&state.db, user_id).await {
         Ok(s) => s,
@@ -412,6 +388,7 @@ async fn find_or_create_user(
         username: Set(username),
         email: Set(user_email),
         github_id: Set(Some(github_id)),
+        created_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 

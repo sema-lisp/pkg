@@ -226,6 +226,7 @@ pub async fn publish(
                 description: Set(metadata.description.clone()),
                 repository_url: Set(metadata.repository_url.clone()),
                 source: Set("upload".into()),
+                created_at: Set(crate::dal::time::now()),
                 ..Default::default()
             };
             let pkg = new_pkg
@@ -253,6 +254,7 @@ pub async fn publish(
         blob_key: Set(blob_key),
         size_bytes: Set(size as i64),
         sema_version_req: Set(metadata.sema_version_req.clone()),
+        published_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 
@@ -417,15 +419,8 @@ pub async fn download(
 
     let row = row.ok_or_else(|| ApiError::not_found("Version not found"))?;
 
-    // Record download (UPSERT) — raw SQL needed for date('now') expression
-    let _ = state
-        .db
-        .execute(Statement::from_sql_and_values(
-            state.db.get_database_backend(),
-            "INSERT INTO download_daily (package_name, version, download_date, count) VALUES ($1, $2, date('now'), 1) ON CONFLICT(package_name, version, download_date) DO UPDATE SET count = count + 1",
-            [name.clone().into(), version.clone().into()],
-        ))
-        .await;
+    // Record the download (engine-portable upsert via the DAL).
+    let _ = crate::dal::downloads::record(&state.db, &name, &version).await;
 
     // GitHub-linked packages: redirect to upstream tarball
     let tarball_url: Option<String> = row.try_get("", "tarball_url").ok();
@@ -479,13 +474,15 @@ pub async fn download_stats(
         .and_then(|r| r.try_get("", "cnt").ok())
         .unwrap_or(0);
 
-    // Daily counts (last 90 days)
+    // Daily counts (last 90 days). The cutoff date is computed in Rust and
+    // bound, so no engine-specific date function is needed.
+    let cutoff = crate::dal::time::date_days_ago(90);
     let daily_rows = state
         .db
         .query_all(Statement::from_sql_and_values(
             backend,
-            "SELECT download_date, SUM(count) as count FROM download_daily WHERE package_name = $1 AND download_date >= date('now', '-90 days') GROUP BY download_date ORDER BY download_date ASC",
-            [name.clone().into()],
+            "SELECT download_date, SUM(count) as count FROM download_daily WHERE package_name = $1 AND download_date >= $2 GROUP BY download_date ORDER BY download_date ASC",
+            [name.clone().into(), cutoff.into()],
         ))
         .await
         .unwrap_or_default();

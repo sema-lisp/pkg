@@ -33,6 +33,7 @@ pub async fn create(
         user_id: Set(user.id),
         name: Set(body.name.clone()),
         token_hash: Set(token_hash),
+        created_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 
@@ -85,7 +86,10 @@ pub async fn revoke(
     Path(token_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
     let result = api_token::Entity::update_many()
-        .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
+        .col_expr(
+            api_token::Column::RevokedAt,
+            Expr::value(crate::dal::time::now()),
+        )
         .filter(api_token::Column::Id.eq(token_id))
         .filter(api_token::Column::UserId.eq(user.id))
         .filter(api_token::Column::RevokedAt.is_null())

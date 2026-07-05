@@ -36,12 +36,13 @@ pub async fn stats(
         .unwrap_or(0) as i64;
 
     let total_downloads: i64 = {
+        let cutoff = crate::dal::time::date_days_ago(30);
         let result = state
             .db
             .query_one(Statement::from_sql_and_values(
                 state.db.get_database_backend(),
-                r#"SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE download_date >= date('now', '-30 days')"#,
-                [],
+                r#"SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE download_date >= $1"#,
+                [cutoff.into()],
             ))
             .await;
         match result {
@@ -255,14 +256,17 @@ pub async fn ban_user(
 
     // Ban the user
     let _ = user::Entity::update_many()
-        .col_expr(user::Column::BannedAt, Expr::cust("datetime('now')"))
+        .col_expr(user::Column::BannedAt, Expr::value(crate::dal::time::now()))
         .filter(user::Column::Id.eq(user_id))
         .exec(&state.db)
         .await;
 
     // Revoke all active tokens
     let _ = api_token::Entity::update_many()
-        .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
+        .col_expr(
+            api_token::Column::RevokedAt,
+            Expr::value(crate::dal::time::now()),
+        )
         .filter(api_token::Column::UserId.eq(user_id))
         .filter(api_token::Column::RevokedAt.is_null())
         .exec(&state.db)
@@ -334,7 +338,10 @@ pub async fn revoke_user_tokens(
         .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     let result = api_token::Entity::update_many()
-        .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
+        .col_expr(
+            api_token::Column::RevokedAt,
+            Expr::value(crate::dal::time::now()),
+        )
         .filter(api_token::Column::UserId.eq(user_id))
         .filter(api_token::Column::RevokedAt.is_null())
         .exec(&state.db)
@@ -925,8 +932,8 @@ pub async fn action_report(
         .db
         .execute(Statement::from_sql_and_values(
             state.db.get_database_backend(),
-            "UPDATE reports SET status = 'actioned', resolved_by = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'open'",
-            [admin.id.into(), report_id.into()],
+            "UPDATE reports SET status = 'actioned', resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
+            [admin.id.into(), crate::dal::time::now().into(), report_id.into()],
         ))
         .await;
 
@@ -957,8 +964,8 @@ pub async fn dismiss_report(
         .db
         .execute(Statement::from_sql_and_values(
             state.db.get_database_backend(),
-            "UPDATE reports SET status = 'dismissed', resolved_by = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'open'",
-            [admin.id.into(), report_id.into()],
+            "UPDATE reports SET status = 'dismissed', resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
+            [admin.id.into(), crate::dal::time::now().into(), report_id.into()],
         ))
         .await;
 
@@ -1035,7 +1042,7 @@ pub async fn submit_report(
         status: Set("open".to_string()),
         resolved_by: Set(None),
         resolved_at: Set(None),
-        created_at: NotSet,
+        created_at: Set(crate::dal::time::now()),
     };
 
     report::Entity::insert(new_report)

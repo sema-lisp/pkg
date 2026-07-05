@@ -21,12 +21,7 @@ pub async fn get_github_token(db: &Db, user_id: i64, token_key: &str) -> Option<
 
 /// Mark a user's GitHub connection as revoked (e.g. after a 401).
 pub async fn mark_token_revoked(db: &Db, user_id: i64) {
-    let _ = db.execute(Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE oauth_connections SET revoked_at = datetime('now') WHERE user_id = ? AND provider = 'github'",
-        [user_id.into()],
-    ))
-    .await;
+    let _ = crate::dal::oauth::mark_revoked(db, user_id).await;
 }
 
 /// Validate that a GitHub repo exists and contains sema.toml. Returns the parsed manifest.
@@ -206,6 +201,7 @@ pub async fn sync_tag(
         size_bytes: Set(0),
         sema_version_req: Set(sema_version_req.map(String::from)),
         tarball_url: Set(Some(tarball_url)),
+        published_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 
@@ -218,6 +214,7 @@ pub async fn sync_tag(
         package_id: Set(package_id),
         tag: Set(tag_name.to_string()),
         status: Set("ok".into()),
+        synced_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
     let _ = log_model.insert(db).await;

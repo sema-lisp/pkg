@@ -100,6 +100,7 @@ pub async fn link(
         source: Set("github".into()),
         github_repo: Set(Some(github_repo.clone())),
         webhook_secret: Set(Some(webhook_secret.clone())),
+        created_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 
@@ -158,6 +159,7 @@ pub async fn link(
                     tag: Set(tag_name.clone()),
                     status: Set("error".into()),
                     error: Set(Some(e.clone())),
+                    synced_at: Set(crate::dal::time::now()),
                     ..Default::default()
                 };
                 let _ = log_model.insert(&state.db).await;
@@ -267,6 +269,7 @@ pub async fn sync(
                     tag: Set(tag_name.clone()),
                     status: Set("error".into()),
                     error: Set(Some(e)),
+                    synced_at: Set(crate::dal::time::now()),
                     ..Default::default()
                 };
                 let _ = log_model.insert(&state.db).await;
@@ -426,6 +429,7 @@ pub async fn webhook(
                 tag: Set(tag_name.to_string()),
                 status: Set("error".into()),
                 error: Set(Some(e.clone())),
+                synced_at: Set(crate::dal::time::now()),
                 ..Default::default()
             };
             let _ = log_model.insert(&state.db).await;

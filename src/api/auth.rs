@@ -59,6 +59,7 @@ pub async fn register(
         username: Set(username.clone()),
         email: Set(email),
         password_hash: Set(Some(password_hash)),
+        created_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 

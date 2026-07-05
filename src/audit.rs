@@ -24,6 +24,7 @@ pub async fn log(
         target_type: Set(target_type.map(String::from)),
         target_name: Set(target_name.map(String::from)),
         detail: Set(detail.map(String::from)),
+        created_at: Set(crate::dal::time::now()),
         ..Default::default()
     };
 

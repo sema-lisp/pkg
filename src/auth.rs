@@ -82,7 +82,7 @@ pub async fn create_session(db: &Db, user_id: i64) -> Result<String, sea_orm::Db
         id: Set(session_id.clone()),
         user_id: Set(user_id),
         expires_at: Set(expires_at),
-        ..Default::default()
+        created_at: Set(crate::dal::time::now()),
     };
 
     model.insert(db).await?;

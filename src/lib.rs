@@ -4,10 +4,12 @@ pub mod auth;
 pub mod blob;
 pub mod config;
 pub mod crypto;
+pub mod dal;
 pub mod db;
 pub mod entity;
 pub mod github;
 pub mod github_sync;
+pub mod migration;
 pub mod web;
 
 use axum::{
