@@ -29,10 +29,14 @@ pub enum Relation {
 }
 
 impl Related<super::package::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Package.def() }
+    fn to() -> RelationDef {
+        Relation::Package.def()
+    }
 }
 impl Related<super::dependency::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Dependencies.def() }
+    fn to() -> RelationDef {
+        Relation::Dependencies.def()
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

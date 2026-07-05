@@ -17,7 +17,11 @@ use crate::{
 fn render<T: Template>(tmpl: T) -> impl IntoResponse {
     match tmpl.render() {
         Ok(html) => Html(html).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Template error: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -27,17 +31,25 @@ struct SessionInfo {
 }
 
 async fn get_session_info(state: &AppState, headers: &axum::http::HeaderMap) -> SessionInfo {
-    let user = (|| async {
+    let user = async {
         let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-        let session_id = cookie.split(';')
+        let session_id = cookie
+            .split(';')
             .filter_map(|c| c.trim().strip_prefix("session="))
             .next()?;
         get_session_user(&state.db, session_id).await
-    })().await;
+    }
+    .await;
 
     match user {
-        Some(u) => SessionInfo { username: Some(u.username), is_admin: u.is_admin },
-        None => SessionInfo { username: None, is_admin: false },
+        Some(u) => SessionInfo {
+            username: Some(u.username),
+            is_admin: u.is_admin,
+        },
+        None => SessionInfo {
+            username: None,
+            is_admin: false,
+        },
     }
 }
 
@@ -163,7 +175,8 @@ pub async fn admin_page(
         Some(_) => render(AdminTemplate {
             username: si.username,
             is_admin: si.is_admin,
-        }).into_response(),
+        })
+        .into_response(),
     }
 }
 
@@ -173,32 +186,39 @@ pub async fn index(
 ) -> impl IntoResponse {
     let si = get_session_info(&state, &headers).await;
 
-    let total_packages = package::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let total_packages = package::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
 
-    let rows = state.db.query_all(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        r#"SELECT p.name, p.description, pv.version, pv.published_at
+    let rows = state
+        .db
+        .query_all(Statement::from_sql_and_values(
+            state.db.get_database_backend(),
+            r#"SELECT p.name, p.description, pv.version, pv.published_at
            FROM packages p
            JOIN package_versions pv ON pv.package_id = p.id
            WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
            ORDER BY pv.published_at DESC
            LIMIT ?"#,
-        [10i64.into()],
-    ))
-    .await
-    .unwrap_or_default();
+            [10i64.into()],
+        ))
+        .await
+        .unwrap_or_default();
 
-    let recent = rows.iter().map(|r| PackageSummary {
-        name: r.try_get("", "name").unwrap_or_default(),
-        description: r.try_get("", "description").unwrap_or_default(),
-        latest_version: r.try_get("", "version").unwrap_or_default(),
-        published_at: r.try_get("", "published_at").unwrap_or_default(),
-    }).collect();
+    let recent = rows
+        .iter()
+        .map(|r| PackageSummary {
+            name: r.try_get("", "name").unwrap_or_default(),
+            description: r.try_get("", "description").unwrap_or_default(),
+            latest_version: r.try_get("", "version").unwrap_or_default(),
+            published_at: r.try_get("", "published_at").unwrap_or_default(),
+        })
+        .collect();
 
-    render(IndexTemplate { username: si.username, is_admin: si.is_admin, total_packages, recent })
+    render(IndexTemplate {
+        username: si.username,
+        is_admin: si.is_admin,
+        total_packages,
+        recent,
+    })
 }
 
 #[derive(Deserialize)]
@@ -233,24 +253,39 @@ pub async fn search(
     .await
     .unwrap_or_default();
 
-    let packages = rows.iter().map(|r| PackageSummary {
-        name: r.try_get("", "name").unwrap_or_default(),
-        description: r.try_get("", "description").unwrap_or_default(),
-        latest_version: r.try_get("", "latest_version").unwrap_or_default(),
-        published_at: r.try_get("", "published_at").unwrap_or_default(),
-    }).collect();
+    let packages = rows
+        .iter()
+        .map(|r| PackageSummary {
+            name: r.try_get("", "name").unwrap_or_default(),
+            description: r.try_get("", "description").unwrap_or_default(),
+            latest_version: r.try_get("", "latest_version").unwrap_or_default(),
+            published_at: r.try_get("", "published_at").unwrap_or_default(),
+        })
+        .collect();
 
-    let total_row = state.db.query_one(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
-        [pattern.clone().into(), pattern.into()],
-    ))
-    .await
-    .ok()
-    .flatten();
-    let total: i64 = total_row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0);
+    let total_row = state
+        .db
+        .query_one(Statement::from_sql_and_values(
+            state.db.get_database_backend(),
+            "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
+            [pattern.clone().into(), pattern.into()],
+        ))
+        .await
+        .ok()
+        .flatten();
+    let total: i64 = total_row
+        .and_then(|r| r.try_get("", "cnt").ok())
+        .unwrap_or(0);
 
-    render(SearchTemplate { username: si.username, is_admin: si.is_admin, query, packages, total, page, per_page })
+    render(SearchTemplate {
+        username: si.username,
+        is_admin: si.is_admin,
+        query,
+        packages,
+        total,
+        page,
+        per_page,
+    })
 }
 
 pub async fn package_detail(
@@ -269,7 +304,9 @@ pub async fn package_detail(
 
     let pkg = match pkg {
         Some(p) => p,
-        None => return (StatusCode::NOT_FOUND, Html("Package not found".to_string())).into_response(),
+        None => {
+            return (StatusCode::NOT_FOUND, Html("Package not found".to_string())).into_response()
+        }
     };
 
     let pkg_id = pkg.id;
@@ -286,14 +323,17 @@ pub async fn package_detail(
         .await
         .unwrap_or_default();
 
-    let versions: Vec<VersionInfo> = version_models.iter().map(|v| VersionInfo {
-        version: v.version.clone(),
-        published_at: v.published_at.clone(),
-        yanked: v.yanked != 0,
-        size_bytes: v.size_bytes,
-        checksum_sha256: v.checksum_sha256.clone(),
-        sema_version_req: v.sema_version_req.clone(),
-    }).collect();
+    let versions: Vec<VersionInfo> = version_models
+        .iter()
+        .map(|v| VersionInfo {
+            version: v.version.clone(),
+            published_at: v.published_at.clone(),
+            yanked: v.yanked != 0,
+            size_bytes: v.size_bytes,
+            checksum_sha256: v.checksum_sha256.clone(),
+            sema_version_req: v.sema_version_req.clone(),
+        })
+        .collect();
 
     // Get deps for latest version
     let deps = if let Some(latest) = version_models.first() {
@@ -302,10 +342,13 @@ pub async fn package_detail(
             .all(&state.db)
             .await
             .unwrap_or_default();
-        dep_models.iter().map(|d| DepInfo {
-            dependency_name: d.dependency_name.clone(),
-            version_req: d.version_req.clone(),
-        }).collect()
+        dep_models
+            .iter()
+            .map(|d| DepInfo {
+                dependency_name: d.dependency_name.clone(),
+                version_req: d.version_req.clone(),
+            })
+            .collect()
     } else {
         vec![]
     };
@@ -317,19 +360,40 @@ pub async fn package_detail(
     ))
     .await
     .unwrap_or_default();
-    let owners: Vec<String> = owner_rows.iter().map(|r| r.try_get("", "username").unwrap_or_default()).collect();
+    let owners: Vec<String> = owner_rows
+        .iter()
+        .map(|r| r.try_get("", "username").unwrap_or_default())
+        .collect();
 
-    let total_row = state.db.query_one(Statement::from_sql_and_values(
-        state.db.get_database_backend(),
-        "SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE package_name = ?",
-        [name.clone().into()],
-    ))
-    .await
-    .ok()
-    .flatten();
-    let total_downloads: i64 = total_row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0);
+    let total_row = state
+        .db
+        .query_one(Statement::from_sql_and_values(
+            state.db.get_database_backend(),
+            "SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE package_name = ?",
+            [name.clone().into()],
+        ))
+        .await
+        .ok()
+        .flatten();
+    let total_downloads: i64 = total_row
+        .and_then(|r| r.try_get("", "cnt").ok())
+        .unwrap_or(0);
 
-    render(PackageTemplate { username: si.username, is_admin: si.is_admin, name, description, repository_url, source, github_repo, owners, versions, deps, total_downloads, readme_html }).into_response()
+    render(PackageTemplate {
+        username: si.username,
+        is_admin: si.is_admin,
+        name,
+        description,
+        repository_url,
+        source,
+        github_repo,
+        owners,
+        versions,
+        deps,
+        total_downloads,
+        readme_html,
+    })
+    .into_response()
 }
 
 pub async fn login(
@@ -341,15 +405,24 @@ pub async fn login(
         return Redirect::to("/account").into_response();
     }
     let github_enabled = state.config.github_client_id.is_some();
-    render(LoginTemplate { username: None, is_admin: false, github_enabled }).into_response()
+    render(LoginTemplate {
+        username: None,
+        is_admin: false,
+        github_enabled,
+    })
+    .into_response()
 }
 
 pub async fn link_page(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let session_id = cookie.split(';')
+    let cookie = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let session_id = cookie
+        .split(';')
         .filter_map(|c| c.trim().strip_prefix("session="))
         .next();
 
@@ -380,15 +453,20 @@ pub async fn link_page(
         is_admin: user.is_admin,
         github_connected,
         github_login,
-    }).into_response()
+    })
+    .into_response()
 }
 
 pub async fn account(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let session_id = cookie.split(';')
+    let cookie = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let session_id = cookie
+        .split(';')
         .filter_map(|c| c.trim().strip_prefix("session="))
         .next();
 
@@ -429,12 +507,15 @@ pub async fn account(
     .await
     .unwrap_or_default();
 
-    let packages = pkg_rows.iter().map(|r| PackageSummary {
-        name: r.try_get("", "name").unwrap_or_default(),
-        description: r.try_get("", "description").unwrap_or_default(),
-        latest_version: r.try_get("", "latest_version").unwrap_or_default(),
-        published_at: r.try_get("", "published_at").unwrap_or_default(),
-    }).collect();
+    let packages = pkg_rows
+        .iter()
+        .map(|r| PackageSummary {
+            name: r.try_get("", "name").unwrap_or_default(),
+            description: r.try_get("", "description").unwrap_or_default(),
+            latest_version: r.try_get("", "latest_version").unwrap_or_default(),
+            published_at: r.try_get("", "published_at").unwrap_or_default(),
+        })
+        .collect();
 
     // Get tokens
     let token_models = api_token::Entity::find()
@@ -445,12 +526,15 @@ pub async fn account(
         .await
         .unwrap_or_default();
 
-    let tokens = token_models.iter().map(|t| TokenInfo {
-        id: t.id,
-        name: t.name.clone(),
-        created_at: t.created_at.clone(),
-        last_used_at: t.last_used_at.clone(),
-    }).collect();
+    let tokens = token_models
+        .iter()
+        .map(|t| TokenInfo {
+            id: t.id,
+            name: t.name.clone(),
+            created_at: t.created_at.clone(),
+            last_used_at: t.last_used_at.clone(),
+        })
+        .collect();
 
     // Get GitHub connection status
     let github_row = oauth_connection::Entity::find()
@@ -474,5 +558,6 @@ pub async fn account(
         github_login,
         packages,
         tokens,
-    }).into_response()
+    })
+    .into_response()
 }

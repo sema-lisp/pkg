@@ -28,13 +28,19 @@ pub enum Relation {
 }
 
 impl Related<super::package_version::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Versions.def() }
+    fn to() -> RelationDef {
+        Relation::Versions.def()
+    }
 }
 impl Related<super::owner::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Owners.def() }
+    fn to() -> RelationDef {
+        Relation::Owners.def()
+    }
 }
 impl Related<super::github_sync_log::Entity> for Entity {
-    fn to() -> RelationDef { Relation::SyncLogs.def() }
+    fn to() -> RelationDef {
+        Relation::SyncLogs.def()
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

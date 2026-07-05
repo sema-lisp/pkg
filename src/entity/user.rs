@@ -33,19 +33,29 @@ pub enum Relation {
 }
 
 impl Related<super::session::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Sessions.def() }
+    fn to() -> RelationDef {
+        Relation::Sessions.def()
+    }
 }
 impl Related<super::api_token::Entity> for Entity {
-    fn to() -> RelationDef { Relation::ApiTokens.def() }
+    fn to() -> RelationDef {
+        Relation::ApiTokens.def()
+    }
 }
 impl Related<super::owner::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Owners.def() }
+    fn to() -> RelationDef {
+        Relation::Owners.def()
+    }
 }
 impl Related<super::oauth_connection::Entity> for Entity {
-    fn to() -> RelationDef { Relation::OauthConnections.def() }
+    fn to() -> RelationDef {
+        Relation::OauthConnections.def()
+    }
 }
 impl Related<super::report::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Reports.def() }
+    fn to() -> RelationDef {
+        Relation::Reports.def()
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

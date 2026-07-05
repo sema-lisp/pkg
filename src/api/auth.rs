@@ -8,8 +8,12 @@ use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
+use super::ApiError;
 use crate::{
-    auth::{create_session, hash_password, validate_email, validate_password, validate_username, verify_password},
+    auth::{
+        create_session, hash_password, validate_email, validate_password, validate_username,
+        verify_password,
+    },
     entity::user,
     AppState,
 };
@@ -38,16 +42,10 @@ fn clear_cookie() -> String {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterRequest>,
-) -> impl IntoResponse {
-    if let Err(e) = validate_username(&body.username) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
-    }
-    if let Err(e) = validate_email(&body.email) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
-    }
-    if let Err(e) = validate_password(&body.password) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    validate_username(&body.username).map_err(ApiError::bad_request)?;
+    validate_email(&body.email).map_err(ApiError::bad_request)?;
+    validate_password(&body.password).map_err(ApiError::bad_request)?;
 
     let username = body.username.to_lowercase();
     let email = body.email.to_lowercase();
@@ -61,78 +59,69 @@ pub async fn register(
         ..Default::default()
     };
 
-    let result = new_user.insert(&state.db).await;
+    let model = new_user
+        .insert(&state.db)
+        .await
+        .map_err(|_| ApiError::conflict("Registration failed"))?;
 
-    match result {
-        Ok(model) => {
-            let user_id = model.id;
-            let session_id = create_session(&state.db, user_id).await;
-            crate::audit::log(&state.db, &username, "register", Some("user"), Some(&username), None).await;
-            (
-                StatusCode::CREATED,
-                [(header::SET_COOKIE, session_cookie(&session_id))],
-                Json(serde_json::json!({"ok": true, "username": username})),
-            )
-                .into_response()
-        }
-        Err(_) => {
-            (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Registration failed"}))).into_response()
-        }
-    }
+    let user_id = model.id;
+    let session_id = create_session(&state.db, user_id)
+        .await
+        .map_err(|_| ApiError::internal("Failed to create session"))?;
+    crate::audit::log(
+        &state.db,
+        &username,
+        "register",
+        Some("user"),
+        Some(&username),
+        None,
+    )
+    .await;
+    Ok((
+        StatusCode::CREATED,
+        [(header::SET_COOKIE, session_cookie(&session_id))],
+        Json(serde_json::json!({"ok": true, "username": username})),
+    ))
 }
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let login_input = body.username.to_lowercase();
 
     let row = user::Entity::find()
         .filter(
             Condition::any()
                 .add(user::Column::Username.eq(&login_input))
-                .add(user::Column::Email.eq(&login_input))
+                .add(user::Column::Email.eq(&login_input)),
         )
         .one(&state.db)
-        .await;
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "Invalid credentials"))?;
 
-    let row = match row {
-        Ok(Some(r)) => r,
-        _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Invalid credentials"})),
-            )
-                .into_response();
-        }
-    };
-
-    let hash = match &row.password_hash {
-        Some(h) => h,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Account uses GitHub login only"})),
-            )
-                .into_response();
-        }
-    };
+    let hash = row
+        .password_hash
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "Account uses GitHub login only"))?;
 
     if !verify_password(&body.password, hash) {
-        return (
+        return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid credentials"})),
-        )
-            .into_response();
+            "Invalid credentials",
+        ));
     }
 
-    let session_id = create_session(&state.db, row.id).await;
-    (
+    let session_id = create_session(&state.db, row.id)
+        .await
+        .map_err(|_| ApiError::internal("Failed to create session"))?;
+    Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, session_cookie(&session_id))],
         Json(serde_json::json!({"ok": true, "username": row.username})),
-    )
-        .into_response()
+    ))
 }
 
 pub async fn logout() -> impl IntoResponse {

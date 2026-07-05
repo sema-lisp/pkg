@@ -2,10 +2,10 @@ use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use serde_json::Value;
-use sea_orm::*;
 use sea_orm::prelude::Expr;
+use sea_orm::*;
 use sema_pkg::entity::user;
+use serde_json::Value;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -41,6 +41,7 @@ pub async fn test_app_with_state() -> (Router, Arc<AppState>, TempDir) {
         session_secret: "test-secret".into(),
         oauth_token_key: "test-key-32-bytes-long-for-aes!!".into(),
         max_tarball_bytes: 10 * 1024 * 1024,
+        max_dependencies: 64,
     };
 
     let state = Arc::new(AppState { db, config });
@@ -144,7 +145,49 @@ pub async fn create_api_token(app: Router, session: &str, name: &str) -> String 
     body["token"].as_str().unwrap().to_string()
 }
 
-/// Publish a package with a fake tarball via multipart
+/// Wrap `data` in a real (decompressible) gzip stream using stored deflate
+/// blocks — valid fixtures for the registry's gzip check without pulling a
+/// compression dependency into the tests.
+pub fn gzip(data: &[u8]) -> Vec<u8> {
+    // Header: magic, CM=8 (deflate), FLG=0, MTIME=0, XFL=0, OS=255 (unknown)
+    let mut out = vec![0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
+
+    // Deflate stored blocks (max 0xFFFF bytes each); an empty input still
+    // needs one final empty block.
+    let mut chunks = data.chunks(0xFFFF).peekable();
+    loop {
+        let chunk: &[u8] = chunks.next().unwrap_or(&[]);
+        let is_last = chunks.peek().is_none();
+        out.push(if is_last { 0x01 } else { 0x00 }); // BFINAL + BTYPE=00 (stored)
+        let len = chunk.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(chunk);
+        if is_last {
+            break;
+        }
+    }
+
+    out.extend_from_slice(&crc32(data).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+/// Publish a package via multipart. `data` is gzip-wrapped before upload
+/// (the registry rejects non-gzip tarballs); use [`publish_package_raw`]
+/// to send bytes verbatim.
 pub async fn publish_package(
     app: Router,
     token: &str,
@@ -152,16 +195,45 @@ pub async fn publish_package(
     version: &str,
     data: &[u8],
 ) -> Response<Body> {
+    publish_package_raw(app, token, name, version, &gzip(data)).await
+}
+
+/// Publish a package sending `raw_tarball` bytes exactly as given.
+pub async fn publish_package_raw(
+    app: Router,
+    token: &str,
+    name: &str,
+    version: &str,
+    raw_tarball: &[u8],
+) -> Response<Body> {
+    let meta = serde_json::json!({"description": format!("A test package: {name}")});
+    publish_package_full(
+        app,
+        token,
+        name,
+        version,
+        raw_tarball,
+        &serde_json::to_string(&meta).unwrap(),
+    )
+    .await
+}
+
+/// Publish with full control over the raw tarball bytes and metadata JSON.
+pub async fn publish_package_full(
+    app: Router,
+    token: &str,
+    name: &str,
+    version: &str,
+    raw_tarball: &[u8],
+    metadata_json: &str,
+) -> Response<Body> {
     let boundary = "----testboundary";
     let mut body_bytes = Vec::new();
 
     // Metadata field
-    let meta = serde_json::json!({"description": format!("A test package: {name}")});
     body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body_bytes.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"metadata\"\r\n\r\n",
-    );
-    body_bytes.extend_from_slice(serde_json::to_string(&meta).unwrap().as_bytes());
+    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"metadata\"\r\n\r\n");
+    body_bytes.extend_from_slice(metadata_json.as_bytes());
     body_bytes.extend_from_slice(b"\r\n");
 
     // Tarball field
@@ -170,7 +242,7 @@ pub async fn publish_package(
         b"Content-Disposition: form-data; name=\"tarball\"; filename=\"pkg.tar.gz\"\r\n",
     );
     body_bytes.extend_from_slice(b"Content-Type: application/gzip\r\n\r\n");
-    body_bytes.extend_from_slice(data);
+    body_bytes.extend_from_slice(raw_tarball);
     body_bytes.extend_from_slice(b"\r\n");
     body_bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
@@ -213,11 +285,7 @@ pub async fn register_admin(
 }
 
 /// Send a POST with empty body and session cookie.
-pub async fn post_empty_with_session(
-    app: Router,
-    uri: &str,
-    session: &str,
-) -> Response<Body> {
+pub async fn post_empty_with_session(app: Router, uri: &str, session: &str) -> Response<Body> {
     app.oneshot(
         Request::builder()
             .method("POST")
@@ -251,37 +319,13 @@ pub async fn put_json_with_session(
 }
 
 /// Send a DELETE with session cookie.
-pub async fn delete_with_session(
-    app: Router,
-    uri: &str,
-    session: &str,
-) -> Response<Body> {
+pub async fn delete_with_session(app: Router, uri: &str, session: &str) -> Response<Body> {
     app.oneshot(
         Request::builder()
             .method("DELETE")
             .uri(uri)
             .header("cookie", format!("session={session}"))
             .body(Body::empty())
-            .unwrap(),
-    )
-    .await
-    .unwrap()
-}
-
-/// Send a DELETE with JSON body and session cookie.
-pub async fn delete_json_with_session(
-    app: Router,
-    uri: &str,
-    body: Value,
-    session: &str,
-) -> Response<Body> {
-    app.oneshot(
-        Request::builder()
-            .method("DELETE")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("cookie", format!("session={session}"))
-            .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap(),
     )
     .await

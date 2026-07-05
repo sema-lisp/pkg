@@ -4,11 +4,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use sea_orm::*;
 use sea_orm::prelude::Expr;
+use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
+use super::ApiError;
 use crate::{
     auth::{generate_token, hash_token, AuthUser},
     entity::api_token,
@@ -24,7 +25,7 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Json(body): Json<CreateTokenRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let token = generate_token();
     let token_hash = hash_token(&token);
 
@@ -35,24 +36,19 @@ pub async fn create(
         ..Default::default()
     };
 
-    let result = new_token.insert(&state.db).await;
+    let model = new_token
+        .insert(&state.db)
+        .await
+        .map_err(|_| ApiError::internal("Failed to create token"))?;
 
-    match result {
-        Ok(model) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "token": token,
-                "id": model.id,
-                "name": body.name,
-            })),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to create token"})),
-        )
-            .into_response(),
-    }
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "token": token,
+            "id": model.id,
+            "name": body.name,
+        })),
+    ))
 }
 
 pub async fn list(
@@ -87,7 +83,7 @@ pub async fn revoke(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Path(token_id): Path<i64>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let result = api_token::Entity::update_many()
         .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
         .filter(api_token::Column::Id.eq(token_id))
@@ -97,13 +93,7 @@ pub async fn revoke(
         .await;
 
     match result {
-        Ok(r) if r.rows_affected > 0 => {
-            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
-        }
-        _ => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Token not found"})),
-        )
-            .into_response(),
+        Ok(r) if r.rows_affected > 0 => Ok((StatusCode::OK, Json(serde_json::json!({"ok": true})))),
+        _ => Err(ApiError::not_found("Token not found")),
     }
 }

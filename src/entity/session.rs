@@ -21,7 +21,9 @@ pub enum Relation {
 }
 
 impl Related<super::user::Entity> for Entity {
-    fn to() -> RelationDef { Relation::User.def() }
+    fn to() -> RelationDef {
+        Relation::User.def()
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

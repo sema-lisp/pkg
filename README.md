@@ -64,6 +64,7 @@ All configuration is via environment variables with sensible defaults:
 | `BASE_URL` | `http://localhost:3000` | Public URL (used in links) |
 | `SESSION_SECRET` | `change-me-in-production` | Secret for session cookies |
 | `MAX_TARBALL_BYTES` | `52428800` (50 MB) | Max upload size |
+| `MAX_DEPENDENCIES` | `64` | Max dependencies per published version |
 | `GITHUB_CLIENT_ID` | — | GitHub OAuth app client ID (optional) |
 | `GITHUB_CLIENT_SECRET` | — | GitHub OAuth app secret (optional) |
 | `OAUTH_TOKEN_KEY` | — | 32-char key for encrypting stored GitHub tokens (required for repo linking) |

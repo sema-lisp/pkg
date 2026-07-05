@@ -25,7 +25,10 @@ async fn main() {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            eprintln!("Port {} is already in use, finding an available port...", state.config.port);
+            eprintln!(
+                "Port {} is already in use, finding an available port...",
+                state.config.port
+            );
             let fallback = format!("{}:0", state.config.host);
             match tokio::net::TcpListener::bind(&fallback).await {
                 Ok(l) => l,

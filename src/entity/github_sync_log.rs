@@ -23,7 +23,9 @@ pub enum Relation {
 }
 
 impl Related<super::package::Entity> for Entity {
-    fn to() -> RelationDef { Relation::Package.def() }
+    fn to() -> RelationDef {
+        Relation::Package.def()
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}

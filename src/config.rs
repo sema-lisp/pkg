@@ -11,6 +11,7 @@ pub struct Config {
     pub session_secret: String,
     pub oauth_token_key: String,
     pub max_tarball_bytes: usize,
+    pub max_dependencies: usize,
 }
 
 impl Config {
@@ -24,8 +25,7 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://data/registry.db?mode=rwc".into()),
             blob_dir: env::var("BLOB_DIR").unwrap_or_else(|_| "data/blobs".into()),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".into()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),
             session_secret: env::var("SESSION_SECRET")
@@ -36,6 +36,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(50 * 1024 * 1024), // 50 MB
+            max_dependencies: env::var("MAX_DEPENDENCIES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64),
         }
     }
 }

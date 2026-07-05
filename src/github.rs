@@ -28,8 +28,12 @@ pub struct StartParams {
     pub return_to: String,
 }
 
-fn default_login() -> String { "login".into() }
-fn default_account() -> String { "/account".into() }
+fn default_login() -> String {
+    "login".into()
+}
+fn default_account() -> String {
+    "/account".into()
+}
 
 /// GET /auth/github — redirect to GitHub authorize URL
 pub async fn start(
@@ -115,7 +119,11 @@ pub async fn callback(
     let return_to = parts.get(2).copied().unwrap_or("/account");
 
     if stored_state.is_empty() || stored_state != params.state {
-        tracing::error!("OAuth state mismatch: stored={:?} vs param={:?}", stored_state, params.state);
+        tracing::error!(
+            "OAuth state mismatch: stored={:?} vs param={:?}",
+            stored_state,
+            params.state
+        );
         return (StatusCode::BAD_REQUEST, "Invalid OAuth state").into_response();
     }
 
@@ -149,7 +157,10 @@ pub async fn callback(
     // Fetch GitHub user info
     let user_res = client
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token_body.access_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", token_body.access_token),
+        )
         .header("User-Agent", "sema-pkg")
         .send()
         .await;
@@ -182,7 +193,13 @@ pub async fn callback(
         let current_user = crate::auth::get_session_user(&state.db, session_id).await;
         let current_user = match current_user {
             Some(u) => u,
-            None => return (StatusCode::UNAUTHORIZED, "Must be logged in to connect GitHub").into_response(),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    "Must be logged in to connect GitHub",
+                )
+                    .into_response()
+            }
         };
 
         // Check if this github_id is already linked to a different user
@@ -196,7 +213,11 @@ pub async fn callback(
 
         if let Some(row) = existing {
             if row.user_id != current_user.id {
-                return (StatusCode::CONFLICT, "This GitHub account is linked to another user").into_response();
+                return (
+                    StatusCode::CONFLICT,
+                    "This GitHub account is linked to another user",
+                )
+                    .into_response();
             }
         }
 
@@ -237,11 +258,13 @@ pub async fn callback(
             }
         }
 
-        let clear_state = "github_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
+        let clear_state =
+            "github_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
         return (
             AppendHeaders([(header::SET_COOKIE, clear_state)]),
             Redirect::to(return_to),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // ── Login mode (default): find/create user, create session ──
@@ -256,7 +279,10 @@ pub async fn callback(
         Ok(id) => id,
         Err(e) => {
             tracing::error!("Failed to find/create GitHub user: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create account")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create account",
+            )
                 .into_response();
         }
     };
@@ -284,8 +310,21 @@ pub async fn callback(
     .await
     .ok();
 
-    let session_id = create_session(&state.db, user_id).await;
-    tracing::info!("GitHub OAuth: created session for user_id={}, redirecting to {}", user_id, return_to);
+    let session_id = match create_session(&state.db, user_id).await {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create session",
+            )
+                .into_response();
+        }
+    };
+    tracing::info!(
+        "GitHub OAuth: created session for user_id={}, redirecting to {}",
+        user_id,
+        return_to
+    );
 
     let session_cookie = format!(
         "session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",

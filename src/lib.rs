@@ -11,6 +11,7 @@ pub mod github_sync;
 pub mod web;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
     Router,
 };
@@ -56,7 +57,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/packages/{name}/{version}",
-            put(api::packages::publish),
+            // Axum's default extractor body cap (2 MB) would silently override
+            // max_tarball_bytes; allow the configured size plus multipart framing.
+            put(api::packages::publish).layer(DefaultBodyLimit::max(
+                state.config.max_tarball_bytes + 1024 * 1024,
+            )),
         )
         .route(
             "/api/v1/packages/{name}/{version}/download",
@@ -75,14 +80,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(api::packages::search))
         // GitHub-linked packages API
         .route("/api/v1/packages/link", post(api::github::link))
-        .route(
-            "/api/v1/packages/{name}/sync",
-            post(api::github::sync),
-        )
-        .route(
-            "/api/v1/webhooks/github",
-            post(api::github::webhook),
-        )
+        .route("/api/v1/packages/{name}/sync", post(api::github::sync))
+        .route("/api/v1/webhooks/github", post(api::github::webhook))
         // Admin API
         .route("/api/v1/admin/stats", get(api::admin::stats))
         .route("/api/v1/admin/users", get(api::admin::list_users))
@@ -100,10 +99,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/admin/users/{id}/role",
             put(api::admin::set_user_role),
         )
-        .route(
-            "/api/v1/admin/packages",
-            get(api::admin::list_packages),
-        )
+        .route("/api/v1/admin/packages", get(api::admin::list_packages))
         .route(
             "/api/v1/admin/packages/{name}",
             get(api::admin::get_package).delete(api::admin::remove_package),

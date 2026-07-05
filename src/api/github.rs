@@ -2,20 +2,20 @@ use axum::{
     body::Bytes,
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use hmac::{Hmac, Mac};
 use sea_orm::*;
-use sha2::Sha256;
 use serde::Deserialize;
+use sha2::Sha256;
 use std::sync::Arc;
 
+use super::ApiError;
 use crate::{
     auth::AuthUser,
     entity::{github_sync_log, owner, package},
-    github_sync,
-    AppState,
+    github_sync, AppState,
 };
 
 #[derive(Deserialize)]
@@ -27,26 +27,33 @@ pub async fn link(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Json(body): Json<LinkRequest>,
-) -> impl IntoResponse {
+) -> Result<Response, ApiError> {
     // Parse the GitHub URL
-    let (owner_name, repo) = match github_sync::parse_github_url(&body.repository_url) {
-        Some(pair) => pair,
-        None => return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid GitHub URL. Expected format: github.com/owner/repo"})),
-        ).into_response(),
-    };
+    let (owner_name, repo) =
+        github_sync::parse_github_url(&body.repository_url).ok_or_else(|| {
+            ApiError::bad_request("Invalid GitHub URL. Expected format: github.com/owner/repo")
+        })?;
 
     // Get the user's GitHub token
-    let token = match github_sync::get_github_token(&state.db, user.id, &state.config.oauth_token_key).await {
+    // (Not an ApiError: this response carries an extra "connect_url" field.)
+    let token = match github_sync::get_github_token(
+        &state.db,
+        user.id,
+        &state.config.oauth_token_key,
+    )
+    .await
+    {
         Some(t) => t,
-        None => return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "GitHub not connected",
-                "connect_url": "/auth/github?mode=connect&return_to=/account"
-            })),
-        ).into_response(),
+        None => {
+            return Ok((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "GitHub not connected",
+                    "connect_url": "/auth/github?mode=connect&return_to=/account"
+                })),
+            )
+                .into_response())
+        }
     };
 
     let client = reqwest::Client::new();
@@ -58,7 +65,7 @@ pub async fn link(
             if e.contains("invalid or revoked") {
                 github_sync::mark_token_revoked(&state.db, user.id).await;
             }
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
+            return Err(ApiError::bad_request(e));
         }
     };
 
@@ -71,12 +78,10 @@ pub async fn link(
         .flatten();
 
     if let Some(pkg) = existing {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": format!("Package '{}' already exists (source: {})", manifest.name, pkg.source)
-            })),
-        ).into_response();
+        return Err(ApiError::conflict(format!(
+            "Package '{}' already exists (source: {})",
+            manifest.name, pkg.source
+        )));
     }
 
     // Generate webhook secret
@@ -94,15 +99,11 @@ pub async fn link(
         ..Default::default()
     };
 
-    let pkg_result = pkg_model.insert(&state.db).await;
-
-    let package_id = match pkg_result {
-        Ok(p) => p.id,
-        Err(e) => return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to create package: {e}")})),
-        ).into_response(),
-    };
+    let package_id = pkg_model
+        .insert(&state.db)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to create package: {e}")))?
+        .id;
 
     // Add user as owner
     let owner_model = owner::ActiveModel {
@@ -113,21 +114,38 @@ pub async fn link(
 
     // Register webhook
     let webhook_url = format!("{}/api/v1/webhooks/github", state.config.base_url);
-    if let Err(e) = github_sync::register_webhook(&client, &token, &owner_name, &repo, &webhook_url, &webhook_secret).await {
+    if let Err(e) = github_sync::register_webhook(
+        &client,
+        &token,
+        &owner_name,
+        &repo,
+        &webhook_url,
+        &webhook_secret,
+    )
+    .await
+    {
         tracing::warn!("Failed to register webhook for {github_repo}: {e}");
     }
 
     // Import existing semver tags
-    let tags = github_sync::list_semver_tags(&client, &token, &owner_name, &repo).await.unwrap_or_default();
+    let tags = github_sync::list_semver_tags(&client, &token, &owner_name, &repo)
+        .await
+        .unwrap_or_default();
     let mut imported = 0u32;
     let mut errors = Vec::new();
 
     for (tag_name, version) in &tags {
         match github_sync::sync_tag(
-            &state.db, &owner_name, &repo,
-            tag_name, version, package_id,
+            &state.db,
+            &owner_name,
+            &repo,
+            tag_name,
+            version,
+            package_id,
             manifest.sema_version_req.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
@@ -156,24 +174,36 @@ pub async fn link(
         }
     }
 
-    crate::audit::log(&state.db, &user.username, "link_repo", Some("package"), Some(&manifest.name), Some(&github_repo)).await;
+    crate::audit::log(
+        &state.db,
+        &user.username,
+        "link_repo",
+        Some("package"),
+        Some(&manifest.name),
+        Some(&github_repo),
+    )
+    .await;
 
-    (StatusCode::CREATED, Json(serde_json::json!({
-        "ok": true,
-        "package": manifest.name,
-        "source": "github",
-        "github_repo": github_repo,
-        "tags_found": tags.len(),
-        "versions_imported": imported,
-        "errors": errors,
-    }))).into_response()
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "ok": true,
+            "package": manifest.name,
+            "source": "github",
+            "github_repo": github_repo,
+            "tags_found": tags.len(),
+            "versions_imported": imported,
+            "errors": errors,
+        })),
+    )
+        .into_response())
 }
 
 pub async fn sync(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let pkg_row = state.db.query_one(Statement::from_sql_and_values(
         state.db.get_database_backend(),
         "SELECT p.id, p.source, p.github_repo FROM packages p JOIN owners o ON o.package_id = p.id WHERE p.name = ? AND o.user_id = ?",
@@ -181,42 +211,25 @@ pub async fn sync(
     ))
     .await
     .ok()
-    .flatten();
-
-    let pkg_row = match pkg_row {
-        Some(r) => r,
-        None => return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Package not found or you are not an owner"})),
-        ).into_response(),
-    };
+    .flatten()
+    .ok_or_else(|| ApiError::not_found("Package not found or you are not an owner"))?;
 
     let source: String = pkg_row.try_get("", "source").unwrap_or_default();
     if source != "github" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Package is not GitHub-linked"})),
-        ).into_response();
+        return Err(ApiError::bad_request("Package is not GitHub-linked"));
     }
 
     let package_id: i64 = pkg_row.try_get("", "id").unwrap_or_default();
     let github_repo: String = pkg_row.try_get("", "github_repo").unwrap_or_default();
 
-    let (owner_name, repo) = match github_sync::parse_github_url(&github_repo) {
-        Some(pair) => pair,
-        None => return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Invalid github_repo in database"})),
-        ).into_response(),
-    };
+    let (owner_name, repo) = github_sync::parse_github_url(&github_repo)
+        .ok_or_else(|| ApiError::internal("Invalid github_repo in database"))?;
 
-    let token = match github_sync::get_github_token(&state.db, user.id, &state.config.oauth_token_key).await {
-        Some(t) => t,
-        None => return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "GitHub not connected. Reconnect at /auth/github?mode=connect"})),
-        ).into_response(),
-    };
+    let token = github_sync::get_github_token(&state.db, user.id, &state.config.oauth_token_key)
+        .await
+        .ok_or_else(|| {
+            ApiError::forbidden("GitHub not connected. Reconnect at /auth/github?mode=connect")
+        })?;
 
     let client = reqwest::Client::new();
     let tags = match github_sync::list_semver_tags(&client, &token, &owner_name, &repo).await {
@@ -225,16 +238,23 @@ pub async fn sync(
             if e.contains("invalid or revoked") || e.contains("401") {
                 github_sync::mark_token_revoked(&state.db, user.id).await;
             }
-            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e}))).into_response();
+            return Err(ApiError::new(StatusCode::BAD_GATEWAY, e));
         }
     };
 
     let mut imported = 0u32;
     for (tag_name, version) in &tags {
         match github_sync::sync_tag(
-            &state.db, &owner_name, &repo,
-            tag_name, version, package_id, None,
-        ).await {
+            &state.db,
+            &owner_name,
+            &repo,
+            tag_name,
+            version,
+            package_id,
+            None,
+        )
+        .await
+        {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
@@ -262,11 +282,11 @@ pub async fn sync(
         }
     }
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "ok": true,
         "tags_found": tags.len(),
         "versions_imported": imported,
-    })).into_response()
+    })))
 }
 
 type HmacSha256 = Hmac<Sha256>;
@@ -275,50 +295,63 @@ pub async fn webhook(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     // Get the signature header
-    let signature = match headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok()) {
-        Some(s) => s.to_string(),
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing signature"}))).into_response(),
-    };
+    let signature = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .ok_or_else(|| ApiError::bad_request("Missing signature"))?;
 
     // Parse the event type
-    let event = headers.get("x-github-event").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let event = headers
+        .get("x-github-event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if event == "ping" {
-        return Json(serde_json::json!({"ok": true, "event": "ping"})).into_response();
+        return Ok(Json(serde_json::json!({"ok": true, "event": "ping"})));
     }
     if event != "push" {
-        return Json(serde_json::json!({"ok": true, "event": event, "skipped": true})).into_response();
+        return Ok(Json(
+            serde_json::json!({"ok": true, "event": event, "skipped": true}),
+        ));
     }
 
     // Parse the push payload to get the ref and repo
-    let payload: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid JSON"}))).into_response(),
-    };
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("Invalid JSON"))?;
 
     let git_ref = payload.get("ref").and_then(|r| r.as_str()).unwrap_or("");
     // Only process tag pushes
     let tag_name = match git_ref.strip_prefix("refs/tags/") {
         Some(t) => t,
-        None => return Json(serde_json::json!({"ok": true, "skipped": "not a tag push"})).into_response(),
+        None => {
+            return Ok(Json(
+                serde_json::json!({"ok": true, "skipped": "not a tag push"}),
+            ))
+        }
     };
 
     // Parse as semver (strip v prefix)
     let version_str = tag_name.strip_prefix('v').unwrap_or(tag_name);
     let version = match semver::Version::parse(version_str) {
         Ok(v) => v,
-        Err(_) => return Json(serde_json::json!({"ok": true, "skipped": "not a semver tag"})).into_response(),
+        Err(_) => {
+            return Ok(Json(
+                serde_json::json!({"ok": true, "skipped": "not a semver tag"}),
+            ))
+        }
     };
 
     // Get the repo full_name from the payload
-    let repo_full_name = payload.get("repository")
+    let repo_full_name = payload
+        .get("repository")
         .and_then(|r| r.get("full_name"))
         .and_then(|n| n.as_str())
         .unwrap_or("");
 
     if repo_full_name.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing repository info"}))).into_response();
+        return Err(ApiError::bad_request("Missing repository info"));
     }
 
     // Find the package by github_repo
@@ -328,12 +361,8 @@ pub async fn webhook(
         .one(&state.db)
         .await
         .ok()
-        .flatten();
-
-    let pkg = match pkg {
-        Some(p) => p,
-        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No linked package for this repo"}))).into_response(),
-    };
+        .flatten()
+        .ok_or_else(|| ApiError::not_found("No linked package for this repo"))?;
 
     let package_id = pkg.id;
     let webhook_secret = pkg.webhook_secret.unwrap_or_default();
@@ -341,26 +370,41 @@ pub async fn webhook(
     // Verify HMAC signature
     let expected_sig = format!("sha256={}", compute_hmac(&webhook_secret, &body));
     if !constant_time_eq(signature.as_bytes(), expected_sig.as_bytes()) {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Invalid signature"}))).into_response();
+        return Err(ApiError::forbidden("Invalid signature"));
     }
 
-    let (owner_name, repo) = match github_sync::parse_github_url(repo_full_name) {
-        Some(pair) => pair,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid repo name"}))).into_response(),
-    };
+    let (owner_name, repo) = github_sync::parse_github_url(repo_full_name)
+        .ok_or_else(|| ApiError::bad_request("Invalid repo name"))?;
 
     match github_sync::sync_tag(
-        &state.db, &owner_name, &repo,
-        tag_name, &version, package_id, None,
-    ).await {
+        &state.db,
+        &owner_name,
+        &repo,
+        tag_name,
+        &version,
+        package_id,
+        None,
+    )
+    .await
+    {
         Ok(true) => {
             tracing::info!("Webhook: synced {repo_full_name} tag {tag_name} as {version}");
-            crate::audit::log(&state.db, "system", "webhook_sync", Some("package"), Some(repo_full_name), Some(tag_name)).await;
-            Json(serde_json::json!({"ok": true, "version": version.to_string(), "imported": true})).into_response()
+            crate::audit::log(
+                &state.db,
+                "system",
+                "webhook_sync",
+                Some("package"),
+                Some(repo_full_name),
+                Some(tag_name),
+            )
+            .await;
+            Ok(Json(
+                serde_json::json!({"ok": true, "version": version.to_string(), "imported": true}),
+            ))
         }
-        Ok(false) => {
-            Json(serde_json::json!({"ok": true, "version": version.to_string(), "imported": false, "reason": "already exists"})).into_response()
-        }
+        Ok(false) => Ok(Json(
+            serde_json::json!({"ok": true, "version": version.to_string(), "imported": false, "reason": "already exists"}),
+        )),
         Err(e) => {
             let log_model = github_sync_log::ActiveModel {
                 package_id: Set(package_id),
@@ -370,7 +414,7 @@ pub async fn webhook(
                 ..Default::default()
             };
             let _ = log_model.insert(&state.db).await;
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response()
+            Err(ApiError::internal(e))
         }
     }
 }
@@ -385,5 +429,8 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }

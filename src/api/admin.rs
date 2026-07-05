@@ -9,9 +9,8 @@ use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::entity::{
-    api_token, owner, package, package_version, report, session, user,
-};
+use super::ApiError;
+use crate::entity::{api_token, owner, package, package_version, report, session, user};
 use crate::{audit, auth::AdminUser, AppState};
 
 // ── Dashboard ──
@@ -20,15 +19,9 @@ pub async fn stats(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
 ) -> impl IntoResponse {
-    let total_users = user::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
 
-    let total_packages = package::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0) as i64;
+    let total_packages = package::Entity::find().count(&state.db).await.unwrap_or(0) as i64;
 
     let banned_users = user::Entity::find()
         .filter(user::Column::BannedAt.is_not_null())
@@ -178,21 +171,13 @@ pub async fn get_user(
     State(state): State<Arc<AppState>>,
     AdminUser(_admin): AdminUser,
     Path(user_id): Path<i64>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let user_model = user::Entity::find_by_id(user_id)
         .one(&state.db)
-        .await;
-
-    let user_model = match user_model {
-        Ok(Some(u)) => u,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     // Get package names via join query
     let packages = state
@@ -226,7 +211,7 @@ pub async fn get_user(
         .await
         .unwrap_or(0) as i64;
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "user": {
             "id": user_model.id,
             "username": user_model.username,
@@ -239,8 +224,7 @@ pub async fn get_user(
         "packages": package_names,
         "package_count": pkg_count,
         "active_token_count": token_count,
-    }))
-    .into_response()
+    })))
 }
 
 #[derive(Deserialize)]
@@ -253,32 +237,21 @@ pub async fn ban_user(
     AdminUser(admin): AdminUser,
     Path(user_id): Path<i64>,
     body: Option<Json<BanRequest>>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     if user_id == admin.id {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Cannot ban yourself"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request("Cannot ban yourself"));
     }
 
     let reason = body.and_then(|b| b.0.reason);
 
     // Verify user exists
-    let user_model = user::Entity::find_by_id(user_id)
+    let username = user::Entity::find_by_id(user_id)
         .one(&state.db)
-        .await;
-
-    let username = match user_model {
-        Ok(Some(u)) => u.username,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     // Ban the user
     let _ = user::Entity::update_many()
@@ -289,10 +262,7 @@ pub async fn ban_user(
 
     // Revoke all active tokens
     let _ = api_token::Entity::update_many()
-        .col_expr(
-            api_token::Column::RevokedAt,
-            Expr::cust("datetime('now')"),
-        )
+        .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
         .filter(api_token::Column::UserId.eq(user_id))
         .filter(api_token::Column::RevokedAt.is_null())
         .exec(&state.db)
@@ -315,28 +285,21 @@ pub async fn ban_user(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn unban_user(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(user_id): Path<i64>,
-) -> impl IntoResponse {
-    let user_model = user::Entity::find_by_id(user_id)
+) -> Result<impl IntoResponse, ApiError> {
+    let username = user::Entity::find_by_id(user_id)
         .one(&state.db)
-        .await;
-
-    let username = match user_model {
-        Ok(Some(u)) => u.username,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     let _ = user::Entity::update_many()
         .col_expr(user::Column::BannedAt, Expr::value(Value::String(None)))
@@ -354,34 +317,24 @@ pub async fn unban_user(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn revoke_user_tokens(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(user_id): Path<i64>,
-) -> impl IntoResponse {
-    let user_model = user::Entity::find_by_id(user_id)
+) -> Result<impl IntoResponse, ApiError> {
+    let username = user::Entity::find_by_id(user_id)
         .one(&state.db)
-        .await;
-
-    let username = match user_model {
-        Ok(Some(u)) => u.username,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     let result = api_token::Entity::update_many()
-        .col_expr(
-            api_token::Column::RevokedAt,
-            Expr::cust("datetime('now')"),
-        )
+        .col_expr(api_token::Column::RevokedAt, Expr::cust("datetime('now')"))
         .filter(api_token::Column::UserId.eq(user_id))
         .filter(api_token::Column::RevokedAt.is_null())
         .exec(&state.db)
@@ -399,7 +352,7 @@ pub async fn revoke_user_tokens(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true, "revoked": count})).into_response()
+    Ok(Json(serde_json::json!({"ok": true, "revoked": count})))
 }
 
 #[derive(Deserialize)]
@@ -412,29 +365,18 @@ pub async fn set_user_role(
     AdminUser(admin): AdminUser,
     Path(user_id): Path<i64>,
     Json(body): Json<RoleRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     if user_id == admin.id {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Cannot change your own admin role"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request("Cannot change your own admin role"));
     }
 
-    let user_model = user::Entity::find_by_id(user_id)
+    let username = user::Entity::find_by_id(user_id)
         .one(&state.db)
-        .await;
-
-    let username = match user_model {
-        Ok(Some(u)) => u.username,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     let admin_val: i32 = if body.is_admin { 1 } else { 0 };
     let _ = user::Entity::update_many()
@@ -454,7 +396,7 @@ pub async fn set_user_role(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 // ── Packages ──
@@ -571,22 +513,14 @@ pub async fn get_package(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
     Path(name): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let pkg = package::Entity::find()
         .filter(package::Column::Name.eq(&name))
         .one(&state.db)
-        .await;
-
-    let pkg = match pkg {
-        Ok(Some(p)) => p,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Package not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::not_found("Package not found"))?;
 
     let pkg_id = pkg.id;
 
@@ -650,7 +584,7 @@ pub async fn get_package(
         }
     };
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "package": {
             "name": pkg.name,
             "description": pkg.description,
@@ -663,15 +597,14 @@ pub async fn get_package(
         "owners": owners,
         "open_reports": open_reports,
         "total_downloads": dl_count,
-    }))
-    .into_response()
+    })))
 }
 
 pub async fn yank_all_versions(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(name): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     // Use raw SQL for the subquery-based update
     let result = state
         .db
@@ -685,11 +618,9 @@ pub async fn yank_all_versions(
     let count = result.map(|r| r.rows_affected()).unwrap_or(0);
 
     if count == 0 {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Package not found or no versions to yank"})),
-        )
-            .into_response();
+        return Err(ApiError::not_found(
+            "Package not found or no versions to yank",
+        ));
     }
 
     audit::log(
@@ -702,29 +633,22 @@ pub async fn yank_all_versions(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true, "yanked": count})).into_response()
+    Ok(Json(serde_json::json!({"ok": true, "yanked": count})))
 }
 
 pub async fn remove_package(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(name): Path<String>,
-) -> impl IntoResponse {
-    let pkg = package::Entity::find()
+) -> Result<impl IntoResponse, ApiError> {
+    let pkg_id = package::Entity::find()
         .filter(package::Column::Name.eq(&name))
         .one(&state.db)
-        .await;
-
-    let pkg_id = match pkg {
-        Ok(Some(p)) => p.id,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Package not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.id)
+        .ok_or_else(|| ApiError::not_found("Package not found"))?;
 
     // Delete dependencies via version_id join (raw SQL for subquery)
     let _ = state
@@ -749,9 +673,7 @@ pub async fn remove_package(
         .await;
 
     // Delete the package
-    let _ = package::Entity::delete_by_id(pkg_id)
-        .exec(&state.db)
-        .await;
+    let _ = package::Entity::delete_by_id(pkg_id).exec(&state.db).await;
 
     // Clean up any reports targeting this package
     let _ = report::Entity::delete_many()
@@ -770,7 +692,7 @@ pub async fn remove_package(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 #[derive(Deserialize)]
@@ -783,38 +705,24 @@ pub async fn transfer_ownership(
     AdminUser(admin): AdminUser,
     Path(name): Path<String>,
     Json(body): Json<TransferRequest>,
-) -> impl IntoResponse {
-    let pkg = package::Entity::find()
+) -> Result<impl IntoResponse, ApiError> {
+    let pkg_id = package::Entity::find()
         .filter(package::Column::Name.eq(&name))
         .one(&state.db)
-        .await;
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.id)
+        .ok_or_else(|| ApiError::not_found("Package not found"))?;
 
-    let pkg_id = match pkg {
-        Ok(Some(p)) => p.id,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Package not found"})),
-            )
-                .into_response();
-        }
-    };
-
-    let target_user = user::Entity::find()
+    let target_id = user::Entity::find()
         .filter(user::Column::Username.eq(&body.to_username))
         .one(&state.db)
-        .await;
-
-    let target_id = match target_user {
-        Ok(Some(u)) => u.id,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Target user not found"})),
-            )
-                .into_response();
-        }
-    };
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+        .ok_or_else(|| ApiError::not_found("Target user not found"))?;
 
     // Remove existing owners
     let _ = owner::Entity::delete_many()
@@ -839,7 +747,7 @@ pub async fn transfer_ownership(
     )
     .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 // ── Audit Log ──
@@ -1012,7 +920,7 @@ pub async fn action_report(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(report_id): Path<i64>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let result = state
         .db
         .execute(Statement::from_sql_and_values(
@@ -1034,13 +942,9 @@ pub async fn action_report(
             )
             .await;
 
-            Json(serde_json::json!({"ok": true})).into_response()
+            Ok(Json(serde_json::json!({"ok": true})))
         }
-        _ => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Report not found or already resolved"})),
-        )
-            .into_response(),
+        _ => Err(ApiError::not_found("Report not found or already resolved")),
     }
 }
 
@@ -1048,7 +952,7 @@ pub async fn dismiss_report(
     State(state): State<Arc<AppState>>,
     AdminUser(admin): AdminUser,
     Path(report_id): Path<i64>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let result = state
         .db
         .execute(Statement::from_sql_and_values(
@@ -1070,13 +974,9 @@ pub async fn dismiss_report(
             )
             .await;
 
-            Json(serde_json::json!({"ok": true})).into_response()
+            Ok(Json(serde_json::json!({"ok": true})))
         }
-        _ => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Report not found or already resolved"})),
-        )
-            .into_response(),
+        _ => Err(ApiError::not_found("Report not found or already resolved")),
     }
 }
 
@@ -1096,40 +996,33 @@ pub async fn submit_report(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Json(body): Json<SubmitReportRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     // Validate target_type
     if !matches!(body.target_type.as_str(), "package" | "user") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "target_type must be 'package' or 'user'"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request(
+            "target_type must be 'package' or 'user'",
+        ));
     }
 
     // Validate report_type
-    if !matches!(body.report_type.as_str(), "spam" | "malware" | "abuse" | "other") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "report_type must be 'spam', 'malware', 'abuse', or 'other'"})),
-        )
-            .into_response();
+    if !matches!(
+        body.report_type.as_str(),
+        "spam" | "malware" | "abuse" | "other"
+    ) {
+        return Err(ApiError::bad_request(
+            "report_type must be 'spam', 'malware', 'abuse', or 'other'",
+        ));
     }
 
     // Validate lengths
     if body.target_name.is_empty() || body.target_name.len() > 200 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "target_name must be 1-200 characters"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request(
+            "target_name must be 1-200 characters",
+        ));
     }
 
     if body.reason.is_empty() || body.reason.len() > 2000 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "reason must be 1-2000 characters"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request("reason must be 1-2000 characters"));
     }
 
     let new_report = report::ActiveModel {
@@ -1145,18 +1038,10 @@ pub async fn submit_report(
         created_at: NotSet,
     };
 
-    let result = report::Entity::insert(new_report).exec(&state.db).await;
+    report::Entity::insert(new_report)
+        .exec(&state.db)
+        .await
+        .map_err(|_| ApiError::internal("Failed to submit report"))?;
 
-    match result {
-        Ok(_) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({"ok": true})),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to submit report"})),
-        )
-            .into_response(),
-    }
+    Ok((StatusCode::CREATED, Json(serde_json::json!({"ok": true}))))
 }

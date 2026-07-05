@@ -1,6 +1,10 @@
 use sea_orm::*;
 
-use crate::{crypto, db::Db, entity::{github_sync_log, oauth_connection, package_version}};
+use crate::{
+    crypto,
+    db::Db,
+    entity::{github_sync_log, oauth_connection, package_version},
+};
 
 /// Fetch the decrypted GitHub access token for a user.
 pub async fn get_github_token(db: &Db, user_id: i64, token_key: &str) -> Option<String> {
@@ -44,11 +48,15 @@ pub async fn validate_repo(
         return Err("GitHub token is invalid or revoked".into());
     }
     if !resp.status().is_success() {
-        return Err(format!("Repository {owner}/{repo} not found or not accessible"));
+        return Err(format!(
+            "Repository {owner}/{repo} not found or not accessible"
+        ));
     }
 
     let toml_resp = client
-        .get(format!("https://api.github.com/repos/{owner}/{repo}/contents/sema.toml"))
+        .get(format!(
+            "https://api.github.com/repos/{owner}/{repo}/contents/sema.toml"
+        ))
         .header("Authorization", format!("Bearer {token}"))
         .header("User-Agent", "sema-pkg")
         .header("Accept", "application/vnd.github.raw+json")
@@ -60,7 +68,10 @@ pub async fn validate_repo(
         return Err(format!("No sema.toml found in {owner}/{repo}"));
     }
 
-    let toml_content = toml_resp.text().await.map_err(|e| format!("Failed to read sema.toml: {e}"))?;
+    let toml_content = toml_resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read sema.toml: {e}"))?;
     parse_manifest(&toml_content)
 }
 
@@ -73,26 +84,38 @@ pub struct RepoManifest {
 }
 
 fn parse_manifest(content: &str) -> Result<RepoManifest, String> {
-    let doc: toml::Value = toml::from_str(content).map_err(|e| format!("Invalid sema.toml: {e}"))?;
-    let pkg = doc.get("package").ok_or("sema.toml missing [package] section")?;
+    let doc: toml::Value =
+        toml::from_str(content).map_err(|e| format!("Invalid sema.toml: {e}"))?;
+    let pkg = doc
+        .get("package")
+        .ok_or("sema.toml missing [package] section")?;
     let pkg = match pkg {
         toml::Value::Table(t) => t,
         _ => return Err("sema.toml [package] must be a table".into()),
     };
-    let name = pkg.get("name")
+    let name = pkg
+        .get("name")
         .and_then(toml::Value::as_str)
         .ok_or("sema.toml [package] missing 'name'")?;
-    let description = pkg.get("description")
+    let description = pkg
+        .get("description")
         .and_then(toml::Value::as_str)
         .unwrap_or("")
         .to_string();
-    let repository_url = pkg.get("repository")
+    let repository_url = pkg
+        .get("repository")
         .and_then(toml::Value::as_str)
         .map(str::to_string);
-    let sema_version_req = pkg.get("sema_version_req")
+    let sema_version_req = pkg
+        .get("sema_version_req")
         .and_then(toml::Value::as_str)
         .map(str::to_string);
-    Ok(RepoManifest { name: name.to_string(), description, repository_url, sema_version_req })
+    Ok(RepoManifest {
+        name: name.to_string(),
+        description,
+        repository_url,
+        sema_version_req,
+    })
 }
 
 /// List semver tags from a GitHub repo. Strips leading 'v' prefix.
@@ -108,7 +131,9 @@ pub async fn list_semver_tags(
 
     loop {
         let resp = client
-            .get(format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100&page={page}"))
+            .get(format!(
+                "https://api.github.com/repos/{owner}/{repo}/tags?per_page=100&page={page}"
+            ))
             .header("Authorization", format!("Bearer {token}"))
             .header("User-Agent", "sema-pkg")
             .send()
@@ -119,7 +144,10 @@ pub async fn list_semver_tags(
             return Err(format!("Failed to list tags ({})", resp.status()));
         }
 
-        let items: Vec<serde_json::Value> = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        let items: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid response: {e}"))?;
         if items.is_empty() {
             break;
         }
@@ -181,7 +209,10 @@ pub async fn sync_tag(
         ..Default::default()
     };
 
-    version_model.insert(db).await.map_err(|e| format!("Failed to insert version: {e}"))?;
+    version_model
+        .insert(db)
+        .await
+        .map_err(|e| format!("Failed to insert version: {e}"))?;
 
     let log_model = github_sync_log::ActiveModel {
         package_id: Set(package_id),
@@ -265,7 +296,10 @@ pub async fn register_webhook(
         let errors = body.get("errors").and_then(|e| e.as_array());
         if let Some(errors) = errors {
             let already_exists = errors.iter().any(|e| {
-                e.get("message").and_then(|m| m.as_str()).map(|m| m.contains("already exists")).unwrap_or(false)
+                e.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|m| m.contains("already exists"))
+                    .unwrap_or(false)
             });
             if already_exists {
                 return Ok(());

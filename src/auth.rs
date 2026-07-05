@@ -62,14 +62,19 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(hash)
 }
 
-pub async fn create_session(db: &Db, user_id: i64) -> String {
+pub async fn create_session(db: &Db, user_id: i64) -> Result<String, sea_orm::DbErr> {
     let session_id = generate_session_id();
     // Note: 7 days must match session cookie Max-Age=604800 in api/auth.rs and github.rs
     let expires_at = {
         let t = OffsetDateTime::now_utc() + Duration::days(7);
         format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            t.year(), t.month() as u8, t.day(), t.hour(), t.minute(), t.second()
+            t.year(),
+            t.month() as u8,
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
         )
     };
 
@@ -80,8 +85,8 @@ pub async fn create_session(db: &Db, user_id: i64) -> String {
         ..Default::default()
     };
 
-    model.insert(db).await.expect("Failed to create session");
-    session_id
+    model.insert(db).await?;
+    Ok(session_id)
 }
 
 pub async fn get_session_user(db: &Db, session_id: &str) -> Option<User> {
@@ -99,7 +104,12 @@ pub async fn get_session_user(db: &Db, session_id: &str) -> Option<User> {
     let t = OffsetDateTime::now_utc();
     let now = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        t.year(), t.month() as u8, t.day(), t.hour(), t.minute(), t.second()
+        t.year(),
+        t.month() as u8,
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second()
     );
     if session_model.expires_at <= now {
         return None;
@@ -192,7 +202,12 @@ impl FromRequestParts<Arc<AppState>> for TokenUser {
         let t = OffsetDateTime::now_utc();
         let now = format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            t.year(), t.month() as u8, t.day(), t.hour(), t.minute(), t.second()
+            t.year(),
+            t.month() as u8,
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
         );
         let mut active_token: api_token::ActiveModel = token_model.into();
         active_token.last_used_at = Set(Some(now));

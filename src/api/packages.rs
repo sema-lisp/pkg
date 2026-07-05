@@ -5,17 +5,21 @@ use axum::{
     response::{IntoResponse, Redirect},
     Json,
 };
-use sea_orm::*;
 use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
+use super::ApiError;
 use crate::{
     auth::TokenUser,
     blob,
     entity::{dependency, owner, package, package_version, user},
     AppState,
 };
+
+/// Magic bytes every gzip stream starts with (RFC 1952).
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 // ── Publish ──
 
@@ -42,48 +46,46 @@ pub async fn publish(
     TokenUser { user, scopes }: TokenUser,
     Path((name, version)): Path<(String, String)>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     if !scopes.contains("publish") {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Token lacks publish scope"})),
-        )
-            .into_response();
+        return Err(ApiError::forbidden("Token lacks publish scope"));
     }
 
-    let ver = match semver::Version::parse(&version) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid semver version"})),
-            )
-                .into_response();
-        }
-    };
+    let ver = semver::Version::parse(&version)
+        .map_err(|_| ApiError::bad_request("Invalid semver version"))?;
 
     let mut tarball_data: Option<Vec<u8>> = None;
     let mut metadata = PublishMetadata::default();
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(_) => return Err(ApiError::bad_request("Malformed multipart body")),
+        };
         let field_name = field.name().unwrap_or("").to_string();
         match field_name.as_str() {
             "tarball" => {
-                let data = field.bytes().await.unwrap_or_default().to_vec();
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|_| ApiError::bad_request("Failed to read tarball field"))?
+                    .to_vec();
                 if data.len() > state.config.max_tarball_bytes {
-                    return (
+                    return Err(ApiError::new(
                         StatusCode::PAYLOAD_TOO_LARGE,
-                        Json(serde_json::json!({"error": "Tarball too large"})),
-                    )
-                        .into_response();
+                        "Tarball too large",
+                    ));
                 }
                 tarball_data = Some(data);
             }
             "metadata" => {
-                let text = field.text().await.unwrap_or_default();
-                if let Ok(m) = serde_json::from_str::<PublishMetadata>(&text) {
-                    metadata = m;
-                }
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::bad_request("Failed to read metadata field"))?;
+                metadata = serde_json::from_str::<PublishMetadata>(&text)
+                    .map_err(|e| ApiError::bad_request(format!("Invalid metadata JSON: {e}")))?;
             }
             _ => {}
         }
@@ -91,126 +93,117 @@ pub async fn publish(
 
     let tarball = match tarball_data {
         Some(d) if !d.is_empty() => d,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Missing tarball"})),
-            )
-                .into_response();
-        }
+        _ => return Err(ApiError::bad_request("Missing tarball")),
     };
 
-    // Find or create package
-    let package_id: i64;
+    if tarball.len() < 2 || tarball[..2] != GZIP_MAGIC {
+        return Err(ApiError::bad_request(
+            "Tarball is not a gzip stream (bad magic bytes)",
+        ));
+    }
+
+    if metadata.dependencies.len() > state.config.max_dependencies {
+        return Err(ApiError::bad_request(format!(
+            "Too many dependencies (max {})",
+            state.config.max_dependencies
+        )));
+    }
+
+    for dep in &metadata.dependencies {
+        if dep.name.is_empty() {
+            return Err(ApiError::bad_request("Dependency name cannot be empty"));
+        }
+        if semver::VersionReq::parse(&dep.version_req).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "Invalid version requirement '{}' for dependency '{}'",
+                dep.version_req, dep.name
+            )));
+        }
+    }
+
+    // Ownership / source checks (reads; the writes below run in one transaction)
     let existing = package::Entity::find()
         .filter(package::Column::Name.eq(&name))
         .one(&state.db)
         .await
-        .ok()
-        .flatten();
+        .map_err(|_| ApiError::internal("Database error"))?;
 
-    if let Some(pkg) = existing {
-        package_id = pkg.id;
-
+    if let Some(pkg) = &existing {
         if pkg.source == "github" {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "This package is GitHub-linked and cannot be published via CLI. Push a new semver tag to the linked repository instead."
-                })),
-            )
-                .into_response();
+            return Err(ApiError::forbidden(
+                "This package is GitHub-linked and cannot be published via CLI. Push a new semver tag to the linked repository instead.",
+            ));
         }
 
         let is_owner = owner::Entity::find()
-            .filter(owner::Column::PackageId.eq(package_id))
+            .filter(owner::Column::PackageId.eq(pkg.id))
             .filter(owner::Column::UserId.eq(user.id))
             .count(&state.db)
             .await
             .unwrap_or(0);
 
         if is_owner == 0 {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "You are not an owner of this package"})),
-            )
-                .into_response();
-        }
-    } else {
-        let txn = match state.db.begin().await {
-            Ok(tx) => tx,
-            Err(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Failed to begin transaction"})),
-                )
-                    .into_response();
-            }
-        };
-
-        let new_pkg = package::ActiveModel {
-            name: Set(name.clone()),
-            description: Set(metadata.description.clone()),
-            repository_url: Set(metadata.repository_url.clone()),
-            source: Set("upload".into()),
-            ..Default::default()
-        };
-
-        match new_pkg.insert(&txn).await {
-            Ok(pkg) => {
-                package_id = pkg.id;
-                let new_owner = owner::ActiveModel {
-                    package_id: Set(package_id),
-                    user_id: Set(user.id),
-                };
-
-                if new_owner.insert(&txn).await.is_err() {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "Failed to create package owner"})),
-                    )
-                        .into_response();
-                }
-            }
-            Err(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Failed to create package"})),
-                )
-                    .into_response();
-            }
-        }
-
-        if txn.commit().await.is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to commit transaction"})),
-            )
-                .into_response();
+            return Err(ApiError::forbidden("You are not an owner of this package"));
         }
     }
 
-    // Check version doesn't exist
     let version_str = ver.to_string();
-    let exists = package_version::Entity::find()
-        .filter(package_version::Column::PackageId.eq(package_id))
-        .filter(package_version::Column::Version.eq(&version_str))
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    if let Some(pkg) = &existing {
+        let exists = package_version::Entity::find()
+            .filter(package_version::Column::PackageId.eq(pkg.id))
+            .filter(package_version::Column::Version.eq(&version_str))
+            .count(&state.db)
+            .await
+            .unwrap_or(0);
 
-    if exists > 0 {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "Version already exists"})),
-        )
-            .into_response();
+        if exists > 0 {
+            return Err(ApiError::conflict("Version already exists"));
+        }
     }
 
-    // Store blob
-    let (blob_key, checksum, size) = blob::store(&state.config.blob_dir, &tarball).await;
+    // Store blob before the transaction: content-addressed, so a failure below
+    // leaves at worst one orphaned file that a retried publish reuses.
+    let (blob_key, checksum, size) = blob::store(&state.config.blob_dir, &tarball)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to store tarball: {e}")))?;
 
-    // Insert version
+    // All DB writes are atomic: on any failure nothing commits (the
+    // transaction rolls back on drop), so a version row can never exist
+    // with missing dependency rows.
+    let txn = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("Failed to begin transaction"))?;
+
+    let package_id = match &existing {
+        Some(pkg) => pkg.id,
+        None => {
+            let new_pkg = package::ActiveModel {
+                name: Set(name.clone()),
+                description: Set(metadata.description.clone()),
+                repository_url: Set(metadata.repository_url.clone()),
+                source: Set("upload".into()),
+                ..Default::default()
+            };
+            let pkg = new_pkg
+                .insert(&txn)
+                .await
+                .map_err(|_| ApiError::internal("Failed to create package"))?;
+
+            let new_owner = owner::ActiveModel {
+                package_id: Set(pkg.id),
+                user_id: Set(user.id),
+            };
+            new_owner
+                .insert(&txn)
+                .await
+                .map_err(|_| ApiError::internal("Failed to create package owner"))?;
+
+            pkg.id
+        }
+    };
+
     let new_version = package_version::ActiveModel {
         package_id: Set(package_id),
         version: Set(version_str.clone()),
@@ -221,42 +214,52 @@ pub async fn publish(
         ..Default::default()
     };
 
-    let version_model = match new_version.insert(&state.db).await {
-        Ok(m) => m,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to insert version"})),
-            )
-                .into_response();
-        }
-    };
+    let version_model = new_version
+        .insert(&txn)
+        .await
+        .map_err(|_| ApiError::internal("Failed to insert version"))?;
 
-    let version_id = version_model.id;
-
-    // Insert dependencies
     for dep in &metadata.dependencies {
         let new_dep = dependency::ActiveModel {
-            version_id: Set(version_id),
+            version_id: Set(version_model.id),
             dependency_name: Set(dep.name.clone()),
             version_req: Set(dep.version_req.clone()),
             ..Default::default()
         };
-        let _ = new_dep.insert(&state.db).await;
+        new_dep
+            .insert(&txn)
+            .await
+            .map_err(|_| ApiError::internal("Failed to insert dependency"))?;
     }
 
-    // Update package description if provided
-    if !metadata.description.is_empty() {
-        let _ = package::Entity::update_many()
-            .col_expr(package::Column::Description, Expr::value(&metadata.description))
+    // Refresh the description on existing packages (new ones got it at insert)
+    if existing.is_some() && !metadata.description.is_empty() {
+        package::Entity::update_many()
+            .col_expr(
+                package::Column::Description,
+                Expr::value(&metadata.description),
+            )
             .filter(package::Column::Id.eq(package_id))
-            .exec(&state.db)
-            .await;
+            .exec(&txn)
+            .await
+            .map_err(|_| ApiError::internal("Failed to update package description"))?;
     }
 
-    crate::audit::log(&state.db, &user.username, "publish", Some("package"), Some(&name), Some(&version_str)).await;
+    txn.commit()
+        .await
+        .map_err(|_| ApiError::internal("Failed to commit transaction"))?;
 
-    (
+    crate::audit::log(
+        &state.db,
+        &user.username,
+        "publish",
+        Some("package"),
+        Some(&name),
+        Some(&version_str),
+    )
+    .await;
+
+    Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
             "ok": true,
@@ -265,8 +268,7 @@ pub async fn publish(
             "checksum": checksum,
             "size": size,
         })),
-    )
-        .into_response()
+    ))
 }
 
 // ── Get Package ──
@@ -274,21 +276,14 @@ pub async fn publish(
 pub async fn get_package(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-) -> impl IntoResponse {
-    let pkg = match package::Entity::find()
+) -> Result<impl IntoResponse, ApiError> {
+    let pkg = package::Entity::find()
         .filter(package::Column::Name.eq(&name))
         .one(&state.db)
         .await
-    {
-        Ok(Some(p)) => p,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Package not found"})),
-            )
-                .into_response();
-        }
-    };
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::not_found("Package not found"))?;
 
     let pkg_id = pkg.id;
 
@@ -342,11 +337,9 @@ pub async fn get_package(
         .ok()
         .flatten();
 
-    let dl_count: i64 = dl_row
-        .and_then(|r| r.try_get("", "cnt").ok())
-        .unwrap_or(0);
+    let dl_count: i64 = dl_row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0);
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "package": {
             "name": pkg.name,
             "description": pkg.description,
@@ -357,8 +350,7 @@ pub async fn get_package(
         "versions": version_list,
         "owners": owners,
         "total_downloads": dl_count,
-    }))
-    .into_response()
+    })))
 }
 
 // ── Download ──
@@ -366,7 +358,7 @@ pub async fn get_package(
 pub async fn download(
     State(state): State<Arc<AppState>>,
     Path((name, version)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Result<axum::response::Response, ApiError> {
     // Join query to find the version row
     let row = state
         .db
@@ -381,16 +373,7 @@ pub async fn download(
         .ok()
         .flatten();
 
-    let row = match row {
-        Some(r) => r,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Version not found"})),
-            )
-                .into_response();
-        }
-    };
+    let row = row.ok_or_else(|| ApiError::not_found("Version not found"))?;
 
     // Record download (UPSERT) — raw SQL needed for date('now') expression
     let _ = state
@@ -406,25 +389,18 @@ pub async fn download(
     let tarball_url: Option<String> = row.try_get("", "tarball_url").ok();
     if let Some(url) = tarball_url {
         if !url.is_empty() {
-            return Redirect::temporary(&url).into_response();
+            return Ok(Redirect::temporary(&url).into_response());
         }
     }
 
     // Upload-sourced packages: serve blob from disk
     let blob_key: String = row.try_get("", "blob_key").unwrap_or_default();
-    let data = match blob::read(&state.config.blob_dir, &blob_key).await {
-        Some(d) => d,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Blob not found on disk"})),
-            )
-                .into_response();
-        }
-    };
+    let data = blob::read(&state.config.blob_dir, &blob_key)
+        .await
+        .ok_or_else(|| ApiError::internal("Blob not found on disk"))?;
 
     let filename = format!("{}-{}.tar.gz", name.replace('/', "-"), version);
-    (
+    Ok((
         [
             (header::CONTENT_TYPE, "application/gzip".to_string()),
             (
@@ -434,7 +410,7 @@ pub async fn download(
         ],
         Body::from(data),
     )
-        .into_response()
+        .into_response())
 }
 
 // ── Download Stats ──
@@ -591,7 +567,7 @@ pub async fn yank(
     State(state): State<Arc<AppState>>,
     TokenUser { user, .. }: TokenUser,
     Path((name, version)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let backend = state.db.get_database_backend();
 
     // Check ownership via join
@@ -613,11 +589,7 @@ pub async fn yank(
         .unwrap_or(0);
 
     if is_owner == 0 {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "Not an owner"})),
-        )
-            .into_response();
+        return Err(ApiError::forbidden("Not an owner"));
     }
 
     // Find the package to get its ID for the update
@@ -626,18 +598,8 @@ pub async fn yank(
         .one(&state.db)
         .await
         .ok()
-        .flatten();
-
-    let pkg = match pkg {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Version not found"})),
-            )
-                .into_response();
-        }
-    };
+        .flatten()
+        .ok_or_else(|| ApiError::not_found("Version not found"))?;
 
     let result = package_version::Entity::update_many()
         .col_expr(package_version::Column::Yanked, Expr::value(1))
@@ -648,14 +610,18 @@ pub async fn yank(
 
     match result {
         Ok(r) if r.rows_affected > 0 => {
-            crate::audit::log(&state.db, &user.username, "yank", Some("version"), Some(&name), Some(&version)).await;
-            Json(serde_json::json!({"ok": true})).into_response()
+            crate::audit::log(
+                &state.db,
+                &user.username,
+                "yank",
+                Some("version"),
+                Some(&name),
+                Some(&version),
+            )
+            .await;
+            Ok(Json(serde_json::json!({"ok": true})))
         }
-        _ => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Version not found"})),
-        )
-            .into_response(),
+        _ => Err(ApiError::not_found("Version not found")),
     }
 }
 
@@ -696,7 +662,7 @@ pub async fn add_owner(
     TokenUser { user, .. }: TokenUser,
     Path(name): Path<String>,
     Json(body): Json<OwnerRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let backend = state.db.get_database_backend();
 
     // Check caller is an owner
@@ -713,35 +679,19 @@ pub async fn add_owner(
         .ok()
         .flatten();
 
-    let pkg_id: i64 = match pkg_row.and_then(|r| r.try_get("", "id").ok()) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Not an owner or package not found"})),
-            )
-                .into_response();
-        }
-    };
+    let pkg_id: i64 = pkg_row
+        .and_then(|r| r.try_get("", "id").ok())
+        .ok_or_else(|| ApiError::forbidden("Not an owner or package not found"))?;
 
     // Find the target user
-    let new_owner = user::Entity::find()
+    let new_owner_id = user::Entity::find()
         .filter(user::Column::Username.eq(&body.username))
         .one(&state.db)
         .await
         .ok()
-        .flatten();
-
-    let new_owner_id = match new_owner {
-        Some(u) => u.id,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "User not found"})),
-            )
-                .into_response();
-        }
-    };
+        .flatten()
+        .map(|u| u.id)
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
 
     // INSERT OR IGNORE
     let new_owner_model = owner::ActiveModel {
@@ -758,9 +708,17 @@ pub async fn add_owner(
         .exec(&state.db)
         .await;
 
-    crate::audit::log(&state.db, &user.username, "add_owner", Some("package"), Some(&name), Some(&body.username)).await;
+    crate::audit::log(
+        &state.db,
+        &user.username,
+        "add_owner",
+        Some("package"),
+        Some(&name),
+        Some(&body.username),
+    )
+    .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 pub async fn remove_owner(
@@ -768,7 +726,7 @@ pub async fn remove_owner(
     TokenUser { user, .. }: TokenUser,
     Path(name): Path<String>,
     Json(body): Json<OwnerRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let backend = state.db.get_database_backend();
 
     // Check caller is an owner
@@ -785,16 +743,9 @@ pub async fn remove_owner(
         .ok()
         .flatten();
 
-    let pkg_id: i64 = match pkg_row.and_then(|r| r.try_get("", "id").ok()) {
-        Some(id) => id,
-        None => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Not an owner or package not found"})),
-            )
-                .into_response();
-        }
-    };
+    let pkg_id: i64 = pkg_row
+        .and_then(|r| r.try_get("", "id").ok())
+        .ok_or_else(|| ApiError::forbidden("Not an owner or package not found"))?;
 
     // Check owner count
     let owner_count = owner::Entity::find()
@@ -804,11 +755,7 @@ pub async fn remove_owner(
         .unwrap_or(0);
 
     if owner_count <= 1 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Cannot remove the last owner"})),
-        )
-            .into_response();
+        return Err(ApiError::bad_request("Cannot remove the last owner"));
     }
 
     // Find target user and delete ownership
@@ -827,7 +774,15 @@ pub async fn remove_owner(
             .await;
     }
 
-    crate::audit::log(&state.db, &user.username, "remove_owner", Some("package"), Some(&name), Some(&body.username)).await;
+    crate::audit::log(
+        &state.db,
+        &user.username,
+        "remove_owner",
+        Some("package"),
+        Some(&name),
+        Some(&body.username),
+    )
+    .await;
 
-    Json(serde_json::json!({"ok": true})).into_response()
+    Ok(Json(serde_json::json!({"ok": true})))
 }
