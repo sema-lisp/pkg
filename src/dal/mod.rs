@@ -21,6 +21,8 @@ pub mod downloads;
 pub mod oauth;
 pub mod owners;
 pub mod packages;
+pub mod sessions;
 pub mod time;
+pub mod tokens;
 pub mod users;
 pub mod versions;

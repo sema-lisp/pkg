@@ -4,7 +4,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use sea_orm::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -14,7 +13,6 @@ use crate::{
         clear_session_cookie, cookie_secure, create_session, delete_session, hash_password,
         session_cookie, validate_email, validate_password, validate_username, verify_password,
     },
-    entity::user,
     AppState,
 };
 
@@ -55,16 +53,7 @@ pub async fn register(
 
     let password_hash = hash_password(&body.password);
 
-    let new_user = user::ActiveModel {
-        username: Set(username.clone()),
-        email: Set(email),
-        password_hash: Set(Some(password_hash)),
-        created_at: Set(crate::dal::time::now()),
-        ..Default::default()
-    };
-
-    let model = new_user
-        .insert(&state.db)
+    let model = crate::dal::users::create(&state.db, &username, &email, &password_hash)
         .await
         .map_err(|_| ApiError::conflict("Registration failed"))?;
 
@@ -95,13 +84,7 @@ pub async fn login(
 ) -> Result<impl IntoResponse, ApiError> {
     let login_input = body.username.to_lowercase();
 
-    let row = user::Entity::find()
-        .filter(
-            Condition::any()
-                .add(user::Column::Username.eq(&login_input))
-                .add(user::Column::Email.eq(&login_input)),
-        )
-        .one(&state.db)
+    let row = crate::dal::users::find_by_username_or_email(&state.db, &login_input)
         .await
         .ok()
         .flatten()
