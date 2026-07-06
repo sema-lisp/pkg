@@ -5,8 +5,6 @@ Self-hostable package registry for the [Sema](https://sema-lang.com) programming
 ## Quick Start
 
 ```bash
-cd pkg
-
 make dev          # start locally (cargo) on a fresh DB and seed it
 make dev-docker   # build + start in Docker on a fresh DB and seed it
 ```

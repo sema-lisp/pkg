@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Self-hostable package registry for Sema"
+repository = "https://github.com/sema-lisp/pkg"
+homepage = "https://sema-lang.com"
 
 [dependencies]
 axum = { version = "0.8", features = ["multipart"] }
