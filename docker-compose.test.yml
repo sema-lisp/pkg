@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Multi-driver integration test suite.
 # Runs the Rust test suite against SQLite, PostgreSQL, and MySQL.
 #
