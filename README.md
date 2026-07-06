@@ -5,29 +5,29 @@ Self-hostable package registry for the [Sema](https://sema-lang.com) programming
 ## Quick Start
 
 ```bash
-make dev          # start locally (cargo) on a fresh DB and seed it
-make dev-docker   # build + start in Docker on a fresh DB and seed it
+jake dev          # start locally (cargo) on a fresh DB and seed it
+jake docker   # build + start in Docker on a fresh DB and seed it
 ```
 
 Both start the registry on [http://localhost:3000](http://localhost:3000) and load the
 demo data (see [Local Development](#local-development) below). If port 3000 is busy they
 bump to the next free port (and point the seed at the same one) — the chosen URL is
-printed at startup. Override with `make dev PORT=4000`. `make dev` runs the server in the
-foreground (Ctrl-C to stop); `make dev-docker` runs it detached and tails the logs
-(`make down` to stop the container).
+printed at startup. Override with `jake dev port=4000`. `jake dev` runs the server in the
+foreground (Ctrl-C to stop); `jake docker` runs it detached and tails the logs
+(`jake down` to stop the container).
 
 To run the server without seeding:
 
 ```bash
-make run                 # locally, no reset/seed
+jake run                 # locally, no reset/seed
 docker compose up --build
 ```
 
-Run `make help` to list all targets.
+Run `jake -l` to list all targets.
 
 ## Local Development
 
-`make dev` / `make dev-docker` reset the database, start the server, and run `seed.sh`
+`jake dev` / `jake docker` reset the database, start the server, and run `seed.sh`
 once it is healthy. The seed creates a reproducible demo dataset:
 
 - **Users:** `helge` (admin), `kari`, `magnus`, `spambot` (banned). Every seeded user has the password `123123123`. Admin login: `helge` / `123123123`, panel at `/admin`.
@@ -43,8 +43,8 @@ has no way to create the first admin). `SEED_MODE` controls how that SQLite step
   server's filesystem (this is why the Docker image bundles `sqlite3`).
 
 ```bash
-make seed                       # seed a registry that is already running (no reset)
-make seed-stress                # seed + bulk synthetic data (local SQLite only)
+jake seed                       # seed a registry that is already running (no reset)
+jake seed-stress                # seed + bulk synthetic data (local SQLite only)
 bash seed.sh --wait             # wait for the server, then seed
 SEED_MODE=docker bash seed.sh   # seed a running Docker registry
 ```
@@ -93,7 +93,7 @@ not to handlers.
 Run the suite against all three engines (Docker):
 
 ```bash
-make test-all-drivers   # SQLite + PostgreSQL + MySQL via docker-compose.test.yml
+jake all-drivers   # SQLite + PostgreSQL + MySQL via docker-compose.test.yml
 ```
 
 ## API Endpoints
