@@ -248,12 +248,12 @@ async fn main() {
 
     let (label, mut counts) = if has("--huge") {
         (
-            "huge (1M packages)",
+            "huge (10M packages)",
             Counts {
-                users: 20_000,
-                packages: 1_000_000,
-                downloads: 200_000,
-                reports: 500,
+                users: 50_000,
+                packages: 10_000_000,
+                downloads: 500_000_000,
+                reports: 2_000,
             },
         )
     } else if has("--large") || has("--scale=large") {
@@ -303,6 +303,14 @@ async fn main() {
             .expect("failed to reset schema");
     }
     let blobs = BlobStore::from_config(&config).expect("failed to init blob store");
+
+    // For a large fresh load, drop the secondary indexes and rebuild them once
+    // at the end — cheaper than maintaining them across every insert.
+    let defer_indexes = fresh && counts.packages > 100_000;
+    if defer_indexes {
+        println!("Dropping secondary indexes for bulk load (rebuilt at the end)...");
+        perf_indexes(&db, false).await;
+    }
 
     let mut rng = StdRng::seed_from_u64(42);
     let t0 = OffsetDateTime::now_utc();
@@ -526,14 +534,30 @@ async fn main() {
 
     // ── Bulk packages (streamed in per-batch transactions) ───────────────
     let bulk_target = counts.packages.saturating_sub(FEATURED.len());
-    let mut seen_pkg: HashSet<String> = FEATURED.iter().map(|f| f.name.to_string()).collect();
+    // The realistic name space is finite (~topics × qualifiers); a
+    // strictly-increasing suffix keeps names unique past it. Below a few million
+    // packages we track seen names for prettier (unsuffixed) names where
+    // possible; beyond that we always suffix and skip the set so its memory
+    // stays flat at scale.
+    let track_names = counts.packages <= 2_000_000;
+    let mut seen_pkg: HashSet<String> = if track_names {
+        FEATURED.iter().map(|f| f.name.to_string()).collect()
+    } else {
+        HashSet::new()
+    };
     let mut spam_pkgs: Vec<String> = Vec::new();
     let mut total_versions: u64 = 0;
+    let mut total_dl: u64 = 0;
+    let mut total_dl_rows: u64 = 0;
     let mut made = 0usize;
     let mut last_report = 0usize;
-    // The realistic name space is finite (~topics × qualifiers); past it we
-    // append a strictly-increasing suffix so uniqueness holds into the millions.
     let mut name_seq: u64 = 0;
+
+    // Download distribution: concentrate on a fraction of packages at huge scale
+    // (most real packages get ~none), spreading `counts.downloads` total across
+    // them; give every package downloads at small scale for a fuller demo.
+    let dl_prob = if counts.packages > 100_000 { 0.08 } else { 1.0 };
+    let dl_mean = counts.downloads as f64 / (counts.packages as f64 * dl_prob).max(1.0);
 
     while made < bulk_target {
         let batch_n = PKG_BATCH.min(bulk_target - made);
@@ -545,13 +569,13 @@ async fn main() {
         let mut owner_of: HashMap<String, i64> = HashMap::with_capacity(batch_n);
         while names.len() < batch_n {
             let base = gen_pkg_name(&mut rng);
-            let name = if seen_pkg.contains(&base) {
+            let name = if !track_names || seen_pkg.contains(&base) {
                 name_seq += 1;
                 format!("{base}-{name_seq}")
             } else {
                 base
             };
-            if !seen_pkg.insert(name.clone()) {
+            if track_names && !seen_pkg.insert(name.clone()) {
                 continue;
             }
             let owner_id = *all_ids.choose(&mut rng).unwrap();
@@ -601,9 +625,10 @@ async fn main() {
             .map(|p| (p.name, p.id))
             .collect();
 
-        // 3. Versions + owners for the batch.
+        // 3. Versions + owners + downloads for the batch.
         let mut versions: Vec<package_version::ActiveModel> = Vec::new();
         let mut owners: Vec<owner::ActiveModel> = Vec::new();
+        let mut downloads: Vec<download_daily::ActiveModel> = Vec::new();
         for name in &names {
             let pid = id_of[name];
             let owner_id = owner_of[name];
@@ -623,6 +648,7 @@ async fn main() {
             let n = rng.gen_range(1..=8);
             let mut vers = unique_versions(&mut rng, n);
             vers.sort_unstable();
+            let mut ver_strings: Vec<String> = Vec::with_capacity(n);
             let mut retained = Vec::new();
             for (i, (maj, min, pat)) in vers.iter().enumerate() {
                 let ver = format!("{maj}.{min}.{pat}");
@@ -647,25 +673,64 @@ async fn main() {
                     ..Default::default()
                 });
                 if pool.len() < POOL_CAP {
-                    retained.push((ver, yanked));
+                    retained.push((ver.clone(), yanked));
                 }
+                ver_strings.push(ver);
             }
             total_versions += vers.len() as u64;
             if pool.len() < POOL_CAP {
                 pool.push((name.clone(), retained));
             }
+
+            // Downloads for this package (aggregate rows, count column sums to
+            // roughly the target across all packages).
+            if rng.gen_bool(dl_prob) {
+                let total = (exp_sample(&mut rng, dl_mean).round() as i64).max(1);
+                // Spread across a few distinct (version, day) cells.
+                let want_cells = rng.gen_range(1..=8).min(total as usize).max(1);
+                let mut cells: HashMap<(String, String), i64> = HashMap::new();
+                for _ in 0..want_cells * 3 {
+                    if cells.len() >= want_cells {
+                        break;
+                    }
+                    let ver = ver_strings[rng.gen_range(0..ver_strings.len())].clone();
+                    let date = date_days_ago(&mut rng, 90, 0);
+                    cells.entry((ver, date)).or_insert(0);
+                }
+                let ncells = cells.len().max(1) as i64;
+                let base = total / ncells;
+                let mut rem = total % ncells;
+                for (ver, date) in cells.into_keys() {
+                    let mut c = base;
+                    if rem > 0 {
+                        c += 1;
+                        rem -= 1;
+                    }
+                    downloads.push(download_daily::ActiveModel {
+                        package_name: Set(name.clone()),
+                        version: Set(ver),
+                        download_date: Set(date),
+                        count: Set(c as i32),
+                    });
+                    total_dl += c as u64;
+                    total_dl_rows += 1;
+                }
+            }
         }
         insert_chunked::<package_version::Entity, _, _>(&txn, versions).await;
         insert_chunked::<owner::Entity, _, _>(&txn, owners).await;
+        insert_chunked::<download_daily::Entity, _, _>(&txn, downloads).await;
 
         txn.commit().await.expect("commit batch");
         made += batch_n;
 
-        if made - last_report >= 50_000 || made == bulk_target {
+        if made - last_report >= 250_000 || made == bulk_target {
             last_report = made;
             let secs = elapsed(t0);
             let rate = made as f64 / secs.max(0.001);
-            println!("  … {made}/{bulk_target} packages, {total_versions} versions  [{secs:.1}s, {rate:.0} pkg/s]");
+            println!(
+                "  … {made}/{bulk_target} pkgs, {total_versions} versions, {total_dl} downloads  [{secs:.0}s, {rate:.0} pkg/s]"
+            );
             std::io::stdout().flush().ok();
         }
     }
@@ -676,38 +741,8 @@ async fn main() {
         elapsed(t0)
     );
 
-    // ── Downloads (against the retained popular pool) ────────────────────
-    let popular_n = (pool.len() / 10).max(1);
-    let mut dl_counts: HashMap<(String, String, String), i32> = HashMap::new();
-    for _ in 0..counts.downloads {
-        let (name, vers) = if rng.gen_bool(0.7) {
-            &pool[rng.gen_range(0..popular_n)]
-        } else {
-            &pool[rng.gen_range(0..pool.len())]
-        };
-        if vers.is_empty() {
-            continue;
-        }
-        let (ver, _) = &vers[rng.gen_range(0..vers.len())];
-        let date = date_days_ago(&mut rng, 60, 0);
-        *dl_counts
-            .entry((name.clone(), ver.clone(), date))
-            .or_insert(0) += 1;
-    }
-    let downloads: Vec<download_daily::ActiveModel> = dl_counts
-        .into_iter()
-        .map(|((name, ver, date), count)| download_daily::ActiveModel {
-            package_name: Set(name),
-            version: Set(ver),
-            download_date: Set(date),
-            count: Set(count),
-        })
-        .collect();
-    let dl_rows = downloads.len();
-    insert_chunked::<download_daily::Entity, _, _>(&db, downloads).await;
     println!(
-        "Downloads: {dl_rows} daily rows ({} events)  [{:.1}s]",
-        counts.downloads,
+        "Downloads: {total_dl} across {total_dl_rows} daily rows  [{:.1}s]",
         elapsed(t0)
     );
 
@@ -757,6 +792,13 @@ async fn main() {
         elapsed(t0)
     );
 
+    if defer_indexes {
+        println!("Rebuilding secondary indexes...");
+        std::io::stdout().flush().ok();
+        perf_indexes(&db, true).await;
+        println!("Indexes rebuilt  [{:.1}s]", elapsed(t0));
+    }
+
     println!();
     println!("=== Seed complete in {:.1}s ===", elapsed(t0));
     println!();
@@ -769,6 +811,47 @@ async fn main() {
 }
 
 // ── Insert helper ─────────────────────────────────────────────────────────
+
+// Secondary indexes (mirrors migration m007) dropped before a bulk load and
+// rebuilt after — a single sorted build is far cheaper than maintaining them
+// incrementally across tens of millions of inserts.
+const PERF_INDEXES: &[(&str, &str, &str)] = &[
+    ("idx_owners_user", "owners", "user_id"),
+    ("idx_users_created", "users", "created_at"),
+    ("idx_packages_created", "packages", "created_at"),
+    ("idx_versions_published", "package_versions", "published_at"),
+];
+
+/// Drop (`create = false`) or rebuild (`create = true`) the perf indexes, using
+/// the schema manager so the DDL is portable across engines.
+async fn perf_indexes(db: &sema_pkg::db::Db, create: bool) {
+    use sea_orm_migration::prelude::*;
+    let manager = SchemaManager::new(db);
+    for (name, table, col) in PERF_INDEXES {
+        if create {
+            let _ = manager
+                .create_index(
+                    Index::create()
+                        .if_not_exists()
+                        .name(*name)
+                        .table(Alias::new(*table))
+                        .col(Alias::new(*col))
+                        .to_owned(),
+                )
+                .await;
+        } else {
+            let _ = manager
+                .drop_index(
+                    Index::drop()
+                        .if_exists()
+                        .name(*name)
+                        .table(Alias::new(*table))
+                        .to_owned(),
+                )
+                .await;
+        }
+    }
+}
 
 /// Insert active models in chunks. Works against a connection or a transaction.
 /// Skips empty input (SeaORM's `insert_many` errors on an empty set).
@@ -797,6 +880,13 @@ fn env_override(key: &str, slot: &mut usize) {
             *slot = n;
         }
     }
+}
+
+/// Sample from an exponential distribution with the given mean — a light,
+/// heavy-tailed spread so a few packages are far more popular than the rest.
+fn exp_sample(rng: &mut StdRng, mean: f64) -> f64 {
+    let u: f64 = rng.gen_range(f64::MIN_POSITIVE..1.0);
+    -mean * u.ln()
 }
 
 fn unique_versions(rng: &mut StdRng, n: usize) -> Vec<(u32, u32, u32)> {
