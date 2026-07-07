@@ -2821,3 +2821,63 @@ async fn test_admin_report_not_found() {
         "action nonexistent report should be 404"
     );
 }
+
+// ── Profile Update Tests ──
+
+#[tokio::test]
+async fn test_update_profile_sets_email_and_homepage() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "prof-user", "prof-user@test.com").await;
+
+    let res = put_json_with_session(
+        app.clone(),
+        "/api/v1/account",
+        serde_json::json!({ "email": "new-prof@test.com", "homepage": "https://example.com" }),
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let uid = get_user_id(&state, "prof-user").await;
+    let user = sema_pkg::dal::users::find_by_id(&state.db, uid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.email, "new-prof@test.com");
+    assert_eq!(user.homepage.as_deref(), Some("https://example.com"));
+
+    // Blank homepage clears it.
+    let res = put_json_with_session(
+        app.clone(),
+        "/api/v1/account",
+        serde_json::json!({ "email": "new-prof@test.com", "homepage": "" }),
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let user = sema_pkg::dal::users::find_by_id(&state.db, uid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.homepage, None);
+}
+
+#[tokio::test]
+async fn test_update_profile_requires_auth() {
+    let (app, _dir) = test_app().await;
+    let res = put_json_with_session(
+        app.clone(),
+        "/api/v1/account",
+        serde_json::json!({ "email": "x@test.com", "homepage": null }),
+        "not-a-real-session",
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn test_official_username_allowlist() {
+    assert!(sema_pkg::auth::is_official("sema"));
+    assert!(sema_pkg::auth::is_official("SEMA"));
+    assert!(!sema_pkg::auth::is_official("helge"));
+}

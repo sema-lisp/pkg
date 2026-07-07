@@ -39,6 +39,13 @@ steps required.
 - **Full-text search** — SQLite FTS5 (with prefix indexes), Postgres `pg_trgm`,
   MySQL `FULLTEXT`; exact-name matches rank first.
 - `DATABASE_MAX_CONNECTIONS` to tune the connection pool.
+- **Editable profile** — the account page now has a Save button that persists
+  email and homepage (`PUT /api/v1/account`).
+- **Official badge** — packages owned by the `sema` house account render a
+  verified "Official" badge on their detail page.
+- **Tigris / AWS-style env fallback** — S3 blob config auto-detects the
+  `BUCKET_NAME` / `AWS_*` variables injected by Fly Tigris, so no manual
+  `BLOB_S3_*` mapping is needed on Fly.io.
 
 ### Changed
 

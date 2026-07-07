@@ -20,6 +20,15 @@ pub struct User {
     pub is_admin: bool,
 }
 
+/// Usernames whose packages carry an "official" badge (the Sema house account).
+/// Kept as a simple allowlist rather than a DB flag until there's a second one.
+pub const OFFICIAL_USERNAMES: &[&str] = &["sema"];
+
+/// Whether a username belongs to an official (verified) account.
+pub fn is_official(username: &str) -> bool {
+    OFFICIAL_USERNAMES.iter().any(|u| u.eq_ignore_ascii_case(username))
+}
+
 pub fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()

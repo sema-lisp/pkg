@@ -52,6 +52,30 @@ pub async fn set_admin<C: ConnectionTrait>(
         .map(|_| ())
 }
 
+/// Update a user's editable profile fields: email and optional homepage. An
+/// empty homepage clears it.
+pub async fn update_profile<C: ConnectionTrait>(
+    db: &C,
+    user_id: i64,
+    email: &str,
+    homepage: Option<&str>,
+) -> Result<(), DbErr> {
+    let homepage = homepage.map(str::trim).filter(|h| !h.is_empty());
+    user::Entity::update_many()
+        .col_expr(user::Column::Email, Expr::value(email.to_string()))
+        .col_expr(
+            user::Column::Homepage,
+            match homepage {
+                Some(h) => Expr::value(h.to_string()),
+                None => Expr::value(Value::String(None)),
+            },
+        )
+        .filter(user::Column::Id.eq(user_id))
+        .exec(db)
+        .await
+        .map(|_| ())
+}
+
 /// Replace a user's password hash (operator-driven reset).
 pub async fn set_password<C: ConnectionTrait>(
     db: &C,
