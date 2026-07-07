@@ -1,12 +1,18 @@
 use sema_pkg::{build_router, AppState};
 use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+
+    // With `--features otel`, install OpenTelemetry file tracing; the guard
+    // flushes buffered spans when it drops at the end of `main`. Otherwise the
+    // plain fmt logger.
+    #[cfg(feature = "otel")]
+    let _otel_guard = sema_pkg::telemetry::init();
+    #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let config = sema_pkg::config::Config::from_env();

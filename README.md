@@ -48,6 +48,32 @@ DATABASE_URL="postgres://sema:sema@localhost:5432/sema" jake seed
 cargo run --features seed --bin seed -- --fresh --large
 ```
 
+For scale testing, `--huge` seeds 20k users and 1M packages (~4.5M versions) in
+under a minute on SQLite; `SEED_USERS` / `SEED_PACKAGES` override any preset.
+
+## Tracing (OpenTelemetry)
+
+Build with the `otel` feature to trace every request and DB query to a JSONL
+file — one span per line — with zero external infrastructure:
+
+```bash
+jake trace                      # runs with --features otel, writes traces.jsonl
+# or: OTEL_TRACE_FILE=t.jsonl cargo run --release --features otel
+```
+
+Each span records `trace_id`, `parent_span_id`, `name`, `duration_ms`, and
+attributes including the source `code.file.path`/`code.line.number`. Requests
+(`tower_http`), handlers, and DAL queries nest into a `request → handler → query`
+tree. Render the slowest spans grouped by trace:
+
+```bash
+jq -r '[.name,(.duration_ms|tostring)+"ms",(.attributes.op//"")]|@tsv' traces.jsonl \
+  | sort -t$'\t' -k2 -rn | column -t -s$'\t'
+```
+
+The feature is opt-in and compiles out of the production binary. `RUST_LOG`
+controls capture (default `info,sema_pkg=trace,tower_http=debug`).
+
 ## Configuration
 
 All configuration is via environment variables with sensible defaults:

@@ -43,9 +43,24 @@ tower_governor = { version = "0.8", default-features = false, features = ["axum"
 # never lands in the production binary.
 fake = { version = "2", optional = true }
 
+# OpenTelemetry request/DB tracing (`--features otel`). Optional so the stack
+# (and its deps) never lands in the production binary. Spans export to an OTel
+# JSON file via the stdout exporter — zero external infrastructure.
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
+opentelemetry-stdout = { version = "0.32", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+
 [features]
 # Compiles the `seed` binary and its fake-data generator.
 seed = ["dep:fake"]
+# OpenTelemetry tracing of request + DB paths, exported to a file.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-stdout",
+    "dep:tracing-opentelemetry",
+]
 
 # Engine-portable dev data seeder. Feature-gated so `cargo build` (production)
 # skips it: `cargo run --features seed --bin seed`.

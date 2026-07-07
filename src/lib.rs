@@ -12,6 +12,8 @@ pub mod github_sync;
 pub mod health;
 pub mod migration;
 pub mod ratelimit;
+#[cfg(feature = "otel")]
+pub mod telemetry;
 pub mod web;
 
 use axum::{
@@ -21,6 +23,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 
 pub struct AppState {
     pub db: db::Db,
@@ -142,5 +145,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/reports", post(api::admin::submit_report));
     let api = ratelimit::global(api, config);
 
-    public.merge(auth).merge(api).with_state(state)
+    // Outermost: a span per request (method, path, status, latency) that parents
+    // the handler/DAL spans. A no-op without a tracing subscriber; exported to
+    // OpenTelemetry when built with `--features otel`.
+    public
+        .merge(auth)
+        .merge(api)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }

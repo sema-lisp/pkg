@@ -48,6 +48,14 @@ task dev port="3000": [reset]
 task run:
     cargo run
 
+# OpenTelemetry request+DB tracing to a JSONL file. Build with the `otel`
+# feature; each span (request → handler → query) is one line in the file.
+@group dev
+@desc "Run the registry with OpenTelemetry tracing to a file (params: file=traces.jsonl)"
+task trace file="traces.jsonl":
+    @needs cargo
+    OTEL_TRACE_FILE={{file}} cargo run --release --features otel
+
 @group dev
 @desc "Seed a fresh DB, build + start in Docker, then tail logs (params: port=3000)"
 task docker port="3000": [reset]

@@ -68,6 +68,7 @@ pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
 /// resolving each hit's latest version and publish time via correlated
 /// subqueries. Differs from [`search`] (the JSON API), which returns
 /// `created_at` instead.
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn search_page<C: ConnectionTrait>(
     db: &C,
     q: &str,
@@ -291,6 +292,7 @@ pub type SearchHit = (String, String, String);
 
 /// Search packages whose name or description matches `q` (case-sensitive
 /// `LIKE`), ordered by name, paginated with `limit`/`offset`.
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn search<C: ConnectionTrait>(
     db: &C,
     q: &str,
@@ -325,6 +327,7 @@ pub async fn search<C: ConnectionTrait>(
 }
 
 /// Count packages matching the same predicate as [`search`].
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn search_count<C: ConnectionTrait>(db: &C, q: &str) -> Result<i64, DbErr> {
     let pattern = format!("%{q}%");
     let row = db

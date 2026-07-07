@@ -13,6 +13,7 @@ use crate::{audit, auth::AdminUser, AppState};
 
 // ── Dashboard ──
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn stats(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
@@ -38,6 +39,7 @@ pub struct UserListParams {
     pub per_page: Option<i64>,
 }
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
@@ -265,6 +267,7 @@ pub struct PkgListParams {
     pub per_page: Option<i64>,
 }
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn list_packages(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,

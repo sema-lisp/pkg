@@ -281,6 +281,7 @@ pub async fn publish(
 
 // ── Get Package ──
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn get_package(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -334,6 +335,7 @@ pub async fn get_package(
 
 // ── Download ──
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn download(
     State(state): State<Arc<AppState>>,
     Path((name, version)): Path<(String, String)>,
@@ -419,6 +421,7 @@ pub struct SearchQuery {
     pub per_page: Option<i64>,
 }
 
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchQuery>,

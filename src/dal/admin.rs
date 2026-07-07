@@ -9,6 +9,7 @@
 //! [`time::date_days_ago`]).
 
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Value};
+use tracing::Instrument;
 
 use crate::dal::time;
 use crate::entity::{package, report, user};
@@ -23,6 +24,7 @@ pub struct Stats {
 }
 
 /// Compute the dashboard summary. `total_downloads` is the rolling 30-day sum.
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn stats<C: ConnectionTrait>(db: &C) -> Stats {
     let total_users = user::Entity::find().count(db).await.unwrap_or(0) as i64;
 
@@ -89,6 +91,7 @@ pub struct UserRow {
 
 /// List users matching `filter`, newest first. Returns the page of rows plus
 /// the total number of matching users.
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn list_users<C: ConnectionTrait>(
     db: &C,
     filter: &UserListFilter,
@@ -120,6 +123,7 @@ pub async fn list_users<C: ConnectionTrait>(
             &count_sql,
             binds.clone(),
         ))
+        .instrument(tracing::debug_span!("db.query", op = "users.count"))
         .await;
     let total: i64 = match count_result {
         Ok(Some(row)) => row.try_get_by_index::<i64>(0).unwrap_or(0),
@@ -142,6 +146,7 @@ pub async fn list_users<C: ConnectionTrait>(
 
     let rows = db
         .query_all(crate::db::stmt(db.get_database_backend(), &sql, binds))
+        .instrument(tracing::debug_span!("db.query", op = "users.page"))
         .await
         .unwrap_or_default();
 
@@ -196,6 +201,7 @@ pub struct PkgRow {
 
 /// List packages matching `filter`, newest first. Returns the page of rows plus
 /// the total number of matching packages.
+#[tracing::instrument(skip_all, level = "debug")]
 pub async fn list_packages<C: ConnectionTrait>(
     db: &C,
     filter: &PkgListFilter,
