@@ -40,7 +40,8 @@ const PACKAGE_USAGE: &str = "\
 Usage: sema-pkg package <command>
 
   yank   <name> <version>            mark a version yanked
-  remove <name>                      delete a package and all its versions";
+  remove <name>                      delete a package and all its versions
+  backfill-readmes                   (re)extract READMEs from stored tarballs";
 
 /// Dispatch a CLI command and exit the process.
 pub async fn run(args: &[String]) -> ! {
@@ -282,6 +283,7 @@ async fn run_package(args: &[String]) -> Result<String, String> {
     match sub {
         Some("yank") => yank(&db, args.get(1), args.get(2)).await,
         Some("remove") => remove(&db, args.get(1)).await,
+        Some("backfill-readmes") => backfill_readmes(&db).await,
         _ => Err(PACKAGE_USAGE.to_string()),
     }
 }
@@ -340,6 +342,48 @@ async fn remove(db: &db::Db, name: Option<&String>) -> Result<String, String> {
     .await;
     Ok(format!(
         "Removed package {name} and all its versions ({reclaimed} blob(s) reclaimed)"
+    ))
+}
+
+/// Re-extract and store each package's README from its newest uploaded tarball.
+/// Idempotent; skips GitHub-linked versions (they get their README from the
+/// repo) and packages whose tarball has no README. Backfills packages that were
+/// published before tarball-README extraction existed.
+async fn backfill_readmes(db: &db::Db) -> Result<String, String> {
+    use sea_orm::EntityTrait;
+    let blobs = BlobStore::from_config(&Config::from_env())?;
+    let packages = crate::entity::package::Entity::find()
+        .all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let total = packages.len();
+    let (mut set, mut skipped) = (0u32, 0u32);
+    for pkg in &packages {
+        let versions = dal::versions::list_for_package_by_id(db, pkg.id).await;
+        let Some(v) = versions
+            .iter()
+            .find(|v| v.tarball_url.is_none() && !v.blob_key.is_empty())
+        else {
+            skipped += 1;
+            continue;
+        };
+        let Some(data) = blobs.read(&v.blob_key).await else {
+            skipped += 1;
+            continue;
+        };
+        match crate::tarball::extract_readme(&data) {
+            Some(md) => {
+                let html = crate::github_sync::render_readme(&md);
+                dal::packages::set_readme(db, pkg.id, &md, &html)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                set += 1;
+            }
+            None => skipped += 1,
+        }
+    }
+    Ok(format!(
+        "Backfilled READMEs: {set} set, {skipped} skipped (of {total} packages)"
     ))
 }
 

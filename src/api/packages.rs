@@ -257,6 +257,16 @@ pub async fn publish(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit transaction: {e:?}")))?;
 
+    // Best-effort: surface the tarball's README on the package page. Non-fatal —
+    // a package without a README (or with a non-decodable tarball) just shows
+    // none. Reflects the just-published version.
+    if let Some(md) = crate::tarball::extract_readme(&tarball) {
+        let html = crate::github_sync::render_readme(&md);
+        if let Err(e) = dal::packages::set_readme(&state.db, package_id, &md, &html).await {
+            tracing::warn!("failed to store README for {name}: {e:?}");
+        }
+    }
+
     crate::audit::log(
         &state.db,
         &user.username,

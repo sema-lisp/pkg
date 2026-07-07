@@ -12,6 +12,12 @@ steps required.
 
 ### Added
 
+- **README rendering for uploaded packages.** On publish, the registry now
+  extracts `README.md` from the package tarball and renders it on the package
+  page (previously only GitHub-linked packages showed a README). Adds
+  `sema-pkg package backfill-readmes` to populate it for packages published
+  before this. The official badge is now a single aligned verified-seal icon
+  (no misaligned pill).
 - **`sema-pkg admin token-create <user> [name]`** — mint an API token for a user
   from the operator CLI (no browser login), so a bot/house account can publish
   without a web session. Prints the token once; audit-logged.

@@ -35,6 +35,9 @@ aes-gcm = "0.10"
 toml = "1.1"
 hmac = "0.12"
 comrak = { version = "0.36", default-features = false, features = ["syntect"] }
+# Decode uploaded package tarballs to extract the README for the package page.
+flate2 = "1"
+tar = "0.4"
 async-trait = "0.1"
 # IP-keyed request rate limiting (GCRA). `axum` for ConnectInfo fallback in the
 # key extractor; drop the default `tonic`/gRPC feature we don't use.

@@ -13,6 +13,7 @@ pub mod github_sync;
 pub mod health;
 pub mod migration;
 pub mod ratelimit;
+pub mod tarball;
 pub mod telemetry;
 pub mod web;
 
