@@ -1,31 +1,115 @@
 use sha2::{Digest, Sha256};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-pub fn blob_path(blob_dir: &str, blob_key: &str) -> PathBuf {
-    Path::new(blob_dir).join(&blob_key[..2]).join(blob_key)
+use object_store::aws::AmazonS3Builder;
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, PutPayload};
+
+use crate::config::Config;
+
+/// Where package tarballs live. Blobs are content-addressed (`<sha256>.tar.gz`)
+/// and sharded by the first two hex chars (`ab/abcd….tar.gz`) — the same layout
+/// on both backends, so data migrates one-for-one.
+///
+/// Filesystem by default; S3-compatible object storage (e.g. Cloudflare R2) when
+/// `BLOB_S3_BUCKET` is configured — which decouples tarball durability from the
+/// compute node (required for stateless / multi-instance deploys).
+pub enum BlobStore {
+    Fs { dir: String },
+    S3 { store: object_store::aws::AmazonS3 },
 }
 
-/// Store bytes to disk, returns (blob_key, sha256_hex, size_bytes).
-///
-/// Blobs are content-addressed (`<sha256>.tar.gz`), so a failure after this
-/// call leaves at worst one orphaned file that a retried publish reuses.
-pub async fn store(blob_dir: &str, data: &[u8]) -> io::Result<(String, String, usize)> {
-    let hash = Sha256::digest(data);
-    let hex = format!("{hash:x}");
-    let key = format!("{hex}.tar.gz");
-    let path = blob_path(blob_dir, &key);
+pub fn content_key(data: &[u8]) -> (String, String, usize) {
+    let hex = format!("{:x}", Sha256::digest(data));
+    (format!("{hex}.tar.gz"), hex, data.len())
+}
 
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+/// `ab/abcd….tar.gz` — shard by the first two chars, identical on fs and S3.
+fn shard(key: &str) -> String {
+    format!("{}/{}", &key[..2], key)
+}
+
+impl BlobStore {
+    /// Build from config: S3 when `BLOB_S3_BUCKET` is set, else local filesystem.
+    pub fn from_config(config: &Config) -> Result<Self, String> {
+        let Some(bucket) = config.blob_s3_bucket.clone() else {
+            return Ok(BlobStore::Fs {
+                dir: config.blob_dir.clone(),
+            });
+        };
+        let access = config
+            .blob_s3_access_key_id
+            .clone()
+            .ok_or("BLOB_S3_ACCESS_KEY_ID is required when BLOB_S3_BUCKET is set")?;
+        let secret = config
+            .blob_s3_secret_access_key
+            .clone()
+            .ok_or("BLOB_S3_SECRET_ACCESS_KEY is required when BLOB_S3_BUCKET is set")?;
+        let mut builder = AmazonS3Builder::new()
+            .with_bucket_name(bucket)
+            .with_access_key_id(access)
+            .with_secret_access_key(secret)
+            // R2 has no regions; "auto" is the conventional value it accepts.
+            .with_region(
+                config
+                    .blob_s3_region
+                    .clone()
+                    .unwrap_or_else(|| "auto".into()),
+            );
+        if let Some(endpoint) = &config.blob_s3_endpoint {
+            builder = builder
+                .with_endpoint(endpoint.clone())
+                .with_allow_http(endpoint.starts_with("http://"));
+        }
+        let store = builder
+            .build()
+            .map_err(|e| format!("failed to init S3 blob store: {e}"))?;
+        Ok(BlobStore::S3 { store })
     }
 
-    tokio::fs::write(&path, data).await?;
-    Ok((key, hex, data.len()))
-}
+    /// A short human label for logs.
+    pub fn describe(&self) -> String {
+        match self {
+            BlobStore::Fs { dir } => format!("filesystem ({dir})"),
+            BlobStore::S3 { .. } => "S3-compatible object storage".into(),
+        }
+    }
 
-/// Read blob bytes from disk.
-pub async fn read(blob_dir: &str, blob_key: &str) -> Option<Vec<u8>> {
-    let path = blob_path(blob_dir, blob_key);
-    tokio::fs::read(path).await.ok()
+    /// Store bytes; returns (blob_key, sha256_hex, size). Content-addressed, so a
+    /// failure downstream leaves at worst one orphan a retried publish reuses.
+    pub async fn store(&self, data: &[u8]) -> io::Result<(String, String, usize)> {
+        let (key, hex, size) = content_key(data);
+        match self {
+            BlobStore::Fs { dir } => {
+                let path = Path::new(dir).join(&key[..2]).join(&key);
+                if let Some(parent) = path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(&path, data).await?;
+            }
+            BlobStore::S3 { store } => {
+                let path = ObjectPath::from(shard(&key));
+                store
+                    .put(&path, PutPayload::from(data.to_vec()))
+                    .await
+                    .map_err(|e| io::Error::other(e.to_string()))?;
+            }
+        }
+        Ok((key, hex, size))
+    }
+
+    /// Read blob bytes, or `None` if the object is missing.
+    pub async fn read(&self, key: &str) -> Option<Vec<u8>> {
+        match self {
+            BlobStore::Fs { dir } => tokio::fs::read(Path::new(dir).join(&key[..2]).join(key))
+                .await
+                .ok(),
+            BlobStore::S3 { store } => {
+                let path = ObjectPath::from(shard(key));
+                let result = store.get(&path).await.ok()?;
+                result.bytes().await.ok().map(|b| b.to_vec())
+            }
+        }
+    }
 }

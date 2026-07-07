@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::ApiError;
-use crate::{auth::TokenUser, blob, dal, AppState};
+use crate::{auth::TokenUser, dal, AppState};
 
 /// Magic bytes every gzip stream starts with (RFC 1952).
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -191,7 +191,9 @@ pub async fn publish(
 
     // Store blob before the transaction: content-addressed, so a failure below
     // leaves at worst one orphaned file that a retried publish reuses.
-    let (blob_key, checksum, size) = blob::store(&state.config.blob_dir, &tarball)
+    let (blob_key, checksum, size) = state
+        .blobs
+        .store(&tarball)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to store tarball: {e}")))?;
 
@@ -214,11 +216,11 @@ pub async fn publish(
                 metadata.repository_url.clone(),
             )
             .await
-            .map_err(|_| ApiError::internal("Failed to create package"))?;
+            .map_err(|e| ApiError::internal(format!("Failed to create package: {e:?}")))?;
 
-            dal::owners::add(&txn, pkg.id, user.id)
-                .await
-                .map_err(|_| ApiError::internal("Failed to create package owner"))?;
+            dal::owners::add(&txn, pkg.id, user.id).await.map_err(|e| {
+                ApiError::internal(format!("Failed to create package owner: {e:?}"))
+            })?;
 
             pkg.id
         }
@@ -234,24 +236,26 @@ pub async fn publish(
         metadata.sema_version_req.clone(),
     )
     .await
-    .map_err(|_| ApiError::internal("Failed to insert version"))?;
+    .map_err(|e| ApiError::internal(format!("Failed to insert version: {e:?}")))?;
 
     for dep in &metadata.dependencies {
         dal::deps::insert(&txn, version_model.id, &dep.name, &dep.version_req)
             .await
-            .map_err(|_| ApiError::internal("Failed to insert dependency"))?;
+            .map_err(|e| ApiError::internal(format!("Failed to insert dependency: {e:?}")))?;
     }
 
     // Refresh the description on existing packages (new ones got it at insert)
     if existing.is_some() && !metadata.description.is_empty() {
         dal::packages::update_description(&txn, package_id, &metadata.description)
             .await
-            .map_err(|_| ApiError::internal("Failed to update package description"))?;
+            .map_err(|e| {
+                ApiError::internal(format!("Failed to update package description: {e:?}"))
+            })?;
     }
 
     txn.commit()
         .await
-        .map_err(|_| ApiError::internal("Failed to commit transaction"))?;
+        .map_err(|e| ApiError::internal(format!("Failed to commit transaction: {e:?}")))?;
 
     crate::audit::log(
         &state.db,
@@ -340,8 +344,9 @@ pub async fn download(
         .flatten()
         .ok_or_else(|| ApiError::not_found("Version not found"))?;
 
-    // Record the download (engine-portable upsert via the DAL).
-    let _ = dal::downloads::record(&state.db, &name, &version).await;
+    if let Err(e) = dal::downloads::record(&state.db, &name, &version).await {
+        tracing::error!("Failed to record download: {e:?}");
+    }
 
     // GitHub-linked packages: redirect to upstream tarball
     if let Some(url) = target.tarball_url {
@@ -351,7 +356,9 @@ pub async fn download(
     }
 
     // Upload-sourced packages: serve blob from disk
-    let data = blob::read(&state.config.blob_dir, &target.blob_key)
+    let data = state
+        .blobs
+        .read(&target.blob_key)
         .await
         .ok_or_else(|| ApiError::internal("Blob not found on disk"))?;
 

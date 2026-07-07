@@ -30,6 +30,17 @@ pub async fn test_app_with_state() -> (Router, Arc<AppState>, TempDir) {
     });
     let db = sema_pkg::db::connect(&db_url).await;
 
+    // SQLite databases in tests are file-based/in-memory and created in a unique temp directory
+    // per test, so they are already fresh. But shared databases (Postgres/MySQL)
+    // must be explicitly wiped to ensure a clean state for each test.
+    if !db_url.starts_with("sqlite") {
+        use sea_orm_migration::MigratorTrait;
+        use sema_pkg::migration::Migrator;
+        Migrator::fresh(&db)
+            .await
+            .expect("Failed to reset database");
+    }
+
     let config = sema_pkg::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -39,11 +50,18 @@ pub async fn test_app_with_state() -> (Router, Arc<AppState>, TempDir) {
         github_client_id: None,
         github_client_secret: None,
         oauth_token_key: "test-key-32-bytes-long-for-aes!!".into(),
+        blob_s3_bucket: std::env::var("BLOB_S3_BUCKET").ok(),
+        blob_s3_endpoint: std::env::var("BLOB_S3_ENDPOINT").ok(),
+        blob_s3_region: std::env::var("BLOB_S3_REGION").ok(),
+        blob_s3_access_key_id: std::env::var("BLOB_S3_ACCESS_KEY_ID").ok(),
+        blob_s3_secret_access_key: std::env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
         max_tarball_bytes: 10 * 1024 * 1024,
         max_dependencies: 64,
     };
 
-    let state = Arc::new(AppState { db, config });
+    let blobs =
+        sema_pkg::blob::BlobStore::from_config(&config).expect("Failed to initialize blob store");
+    let state = Arc::new(AppState { db, config, blobs });
     let app = build_router(state.clone());
     (app, state, dir)
 }

@@ -46,6 +46,12 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(0),
                     )
+                    .primary_key(
+                        Index::create()
+                            .col(Alias::new("package_name"))
+                            .col(Alias::new("version"))
+                            .col(Alias::new("download_date")),
+                    )
                     .index(
                         Index::create()
                             .name("uq_download_daily")

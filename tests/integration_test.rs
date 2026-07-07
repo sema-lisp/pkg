@@ -220,9 +220,11 @@ async fn test_publish_and_get_package() {
     let session = register_user(app.clone(), "publisher", "pub@example.com").await;
     let token = create_api_token(app.clone(), &session, "pub-token").await;
 
-    // Publish
     let res = publish_package(app.clone(), &token, "my-pkg", "1.0.0", b"fake tarball data").await;
-    assert_eq!(res.status(), StatusCode::CREATED);
+    if res.status() != StatusCode::CREATED {
+        let body_str = body_string(res).await;
+        panic!("Publish failed: {}", body_str);
+    }
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
     assert_eq!(body["package"], "my-pkg");
@@ -866,11 +868,12 @@ async fn test_get_package_includes_tarball_url() {
     );
 }
 
-#[test]
-fn test_blob_path() {
-    let path = sema_pkg::blob::blob_path("/data/blobs", "abcdef.tar.gz");
-    assert_eq!(path.to_str().unwrap(), "/data/blobs/ab/abcdef.tar.gz");
-}
+// The `blob_path` function has been replaced by the BlobStore enum.
+// #[test]
+// fn test_blob_path() {
+//     let path = sema_pkg::blob::blob_path("/data/blobs", "abcdef.tar.gz");
+//     assert_eq!(path.to_str().unwrap(), "/data/blobs/ab/abcdef.tar.gz");
+// }
 
 // ── Security Tests ──
 
@@ -1195,6 +1198,11 @@ fn test_check_production_secrets_rejects_default_key_with_github() {
         github_client_id: None,
         github_client_secret: None,
         oauth_token_key: DEFAULT_OAUTH_TOKEN_KEY.into(),
+        blob_s3_bucket: None,
+        blob_s3_endpoint: None,
+        blob_s3_region: None,
+        blob_s3_access_key_id: None,
+        blob_s3_secret_access_key: None,
         max_tarball_bytes: 1024,
         max_dependencies: 64,
     };

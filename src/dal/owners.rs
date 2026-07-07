@@ -4,9 +4,7 @@
 //! SeaORM's `on_conflict` so a repeated add is a portable no-op.
 
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set, Statement,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
 
 use crate::entity::owner;
 
@@ -31,11 +29,11 @@ pub async fn package_id_if_owner<C: ConnectionTrait>(
     user_id: i64,
 ) -> Result<Option<i64>, DbErr> {
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT p.id FROM packages p
                JOIN owners o ON o.package_id = p.id
-               WHERE p.name = $1 AND o.user_id = $2"#,
+               WHERE p.name = ? AND o.user_id = ?"#,
             [name.into(), user_id.into()],
         ))
         .await?;
@@ -48,11 +46,11 @@ pub async fn list_usernames<C: ConnectionTrait>(
     package_id: i64,
 ) -> Result<Vec<String>, DbErr> {
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT u.username FROM users u
                JOIN owners o ON o.user_id = u.id
-               WHERE o.package_id = $1"#,
+               WHERE o.package_id = ?"#,
             [package_id.into()],
         ))
         .await?;
@@ -65,11 +63,11 @@ pub async fn list_usernames<C: ConnectionTrait>(
 /// Names of every package owned by `user_id`, alphabetical.
 pub async fn package_names_for_user<C: ConnectionTrait>(db: &C, user_id: i64) -> Vec<String> {
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT p.name FROM packages p
                JOIN owners o ON o.package_id = p.id
-               WHERE o.user_id = $1
+               WHERE o.user_id = ?
                ORDER BY p.name"#,
             [user_id.into()],
         ))
@@ -98,10 +96,9 @@ pub async fn add<C: ConnectionTrait>(db: &C, package_id: i64, user_id: i64) -> R
     owner::Entity::insert(row)
         .on_conflict(
             OnConflict::columns([owner::Column::PackageId, owner::Column::UserId])
-                .do_nothing()
+                .update_column(owner::Column::UserId)
                 .to_owned(),
         )
-        .do_nothing()
         .exec(db)
         .await
         .map(|_| ())

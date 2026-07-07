@@ -19,6 +19,9 @@ askama = "0.12"
 argon2 = "0.5"
 sha2 = "0.10"
 rand = "0.8"
+# Blob storage: local filesystem (default) or S3-compatible object storage
+# (Cloudflare R2, etc.) for durable, node-independent tarball storage.
+object_store = { version = "0.11", features = ["aws"] }
 base64 = "0.22"
 dotenvy = "0.15"
 tracing = "0.1"

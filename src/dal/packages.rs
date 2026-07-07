@@ -5,7 +5,7 @@
 
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, Set, Statement,
+    PaginatorTrait, QueryFilter, Set,
 };
 
 use crate::dal::time;
@@ -44,16 +44,20 @@ fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
 /// latest version (highest-id row). `limit` bounds the result. Used by the
 /// homepage.
 pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
+    let sql = format!(
+        r#"SELECT p.name, p.description, pv.version AS latest_version, pv.published_at
+           FROM packages p
+           JOIN package_versions pv ON pv.package_id = p.id
+           WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
+           ORDER BY pv.published_at DESC
+           LIMIT {}"#,
+        limit
+    );
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            r#"SELECT p.name, p.description, pv.version AS latest_version, pv.published_at
-               FROM packages p
-               JOIN package_versions pv ON pv.package_id = p.id
-               WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
-               ORDER BY pv.published_at DESC
-               LIMIT $1"#,
-            [limit.into()],
+            &sql,
+            Vec::<sea_orm::Value>::new(),
         ))
         .await
         .unwrap_or_default();
@@ -71,22 +75,21 @@ pub async fn search_page<C: ConnectionTrait>(
     offset: i64,
 ) -> Vec<ListingRow> {
     let pattern = format!("%{q}%");
+    let sql = format!(
+        r#"SELECT p.name, p.description,
+           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+           FROM packages p
+           WHERE p.name LIKE ? OR p.description LIKE ?
+           ORDER BY p.name
+           LIMIT {} OFFSET {}"#,
+        limit, offset
+    );
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            r#"SELECT p.name, p.description,
-               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-               FROM packages p
-               WHERE p.name LIKE $1 OR p.description LIKE $2
-               ORDER BY p.name
-               LIMIT $3 OFFSET $4"#,
-            [
-                pattern.clone().into(),
-                pattern.into(),
-                limit.into(),
-                offset.into(),
-            ],
+            &sql,
+            [pattern.clone().into(), pattern.into()],
         ))
         .await
         .unwrap_or_default();
@@ -97,14 +100,14 @@ pub async fn search_page<C: ConnectionTrait>(
 /// version and publish time, alphabetical by name.
 pub async fn list_for_owner<C: ConnectionTrait>(db: &C, user_id: i64) -> Vec<ListingRow> {
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT p.name, p.description,
                COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
                COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
                FROM packages p
                JOIN owners o ON o.package_id = p.id
-               WHERE o.user_id = $1
+               WHERE o.user_id = ?
                ORDER BY p.name"#,
             [user_id.into()],
         ))
@@ -134,11 +137,11 @@ pub async fn find_owned<C: ConnectionTrait>(
     user_id: i64,
 ) -> Option<(i64, String, String)> {
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT p.id, p.source, p.github_repo FROM packages p
                JOIN owners o ON o.package_id = p.id
-               WHERE p.name = $1 AND o.user_id = $2"#,
+               WHERE p.name = ? AND o.user_id = ?"#,
             [name.into(), user_id.into()],
         ))
         .await
@@ -229,7 +232,7 @@ pub async fn update_description<C: ConnectionTrait>(
 /// no versions).
 pub async fn yank_all<C: ConnectionTrait>(db: &C, name: &str) -> u64 {
     let result = db
-        .execute(Statement::from_sql_and_values(
+        .execute(crate::db::stmt(
             db.get_database_backend(),
             "UPDATE package_versions SET yanked = 1 WHERE package_id = (SELECT id FROM packages WHERE name = ?)",
             [name.into()],
@@ -251,7 +254,7 @@ pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> bool {
 
     // Delete dependencies via version_id join (raw SQL for subquery)
     let _ = db
-        .execute(Statement::from_sql_and_values(
+        .execute(crate::db::stmt(
             db.get_database_backend(),
             "DELETE FROM dependencies WHERE version_id IN (SELECT id FROM package_versions WHERE package_id = ?)",
             [pkg_id.into()],
@@ -295,19 +298,18 @@ pub async fn search<C: ConnectionTrait>(
     offset: i64,
 ) -> Result<Vec<SearchHit>, DbErr> {
     let pattern = format!("%{q}%");
+    let sql = format!(
+        r#"SELECT name, description, created_at FROM packages
+           WHERE name LIKE ? OR description LIKE ?
+           ORDER BY name
+           LIMIT {} OFFSET {}"#,
+        limit, offset
+    );
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            r#"SELECT name, description, created_at FROM packages
-               WHERE name LIKE $1 OR description LIKE $2
-               ORDER BY name
-               LIMIT $3 OFFSET $4"#,
-            [
-                pattern.clone().into(),
-                pattern.into(),
-                limit.into(),
-                offset.into(),
-            ],
+            &sql,
+            [pattern.clone().into(), pattern.into()],
         ))
         .await?;
 
@@ -326,9 +328,9 @@ pub async fn search<C: ConnectionTrait>(
 pub async fn search_count<C: ConnectionTrait>(db: &C, q: &str) -> Result<i64, DbErr> {
     let pattern = format!("%{q}%");
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
-            "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE $1 OR description LIKE $2",
+            "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
             [pattern.clone().into(), pattern.into()],
         ))
         .await?;

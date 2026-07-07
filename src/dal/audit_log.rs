@@ -5,7 +5,7 @@
 //! every user value as a bound parameter, then interpolates only the assembled
 //! fragment string into the query — injection-safe and portable across engines.
 
-use sea_orm::{ActiveModelTrait, ConnectionTrait, Set, Statement, Value};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, Set, Value};
 
 use crate::dal::time;
 use crate::entity::audit_log;
@@ -75,7 +75,7 @@ pub async fn list<C: ConnectionTrait>(db: &C, filter: &AuditFilter) -> (Vec<Audi
     // Get total count
     let count_sql = format!("SELECT COUNT(*) as cnt FROM audit_log WHERE {where_sql}");
     let count_result = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             &count_sql,
             binds.clone(),
@@ -100,11 +100,7 @@ pub async fn list<C: ConnectionTrait>(db: &C, filter: &AuditFilter) -> (Vec<Audi
     all_binds.push(filter.offset.into());
 
     let rows = db
-        .query_all(Statement::from_sql_and_values(
-            db.get_database_backend(),
-            &sql,
-            all_binds,
-        ))
+        .query_all(crate::db::stmt(db.get_database_backend(), &sql, all_binds))
         .await
         .unwrap_or_default();
 

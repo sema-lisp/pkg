@@ -58,7 +58,12 @@ All configuration is via environment variables with sensible defaults:
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `3000` | Listen port |
 | `DATABASE_URL` | `sqlite://data/registry.db?mode=rwc` | Database URL. The engine is inferred from the scheme — `sqlite:`, `postgres:`, or `mysql:` (see [Database engines](#database-engines)). |
-| `BLOB_DIR` | `data/blobs` | Directory for package tarballs |
+| `BLOB_DIR` | `data/blobs` | Directory for package tarballs (used when S3 is not configured) |
+| `BLOB_S3_BUCKET` | — | Bucket for S3-compatible blob storage (Cloudflare R2, MinIO, S3). When set, tarballs go to object storage instead of `BLOB_DIR` — required for stateless / multi-instance deploys. |
+| `BLOB_S3_ENDPOINT` | — | S3 endpoint URL (e.g. `https://<account>.r2.cloudflarestorage.com`). Omit for AWS S3. |
+| `BLOB_S3_REGION` | `auto` | Region. `auto` for R2. |
+| `BLOB_S3_ACCESS_KEY_ID` | — | Access key (required when `BLOB_S3_BUCKET` is set) |
+| `BLOB_S3_SECRET_ACCESS_KEY` | — | Secret key (required when `BLOB_S3_BUCKET` is set) |
 | `BASE_URL` | `http://localhost:3000` | Public URL (used in links; enables `Secure` session cookies when `https://`) |
 | `MAX_TARBALL_BYTES` | `52428800` (50 MB) | Max upload size |
 | `MAX_DEPENDENCIES` | `64` | Max dependencies per published version |
@@ -178,6 +183,9 @@ docker compose up -d
 ```
 
 Data is stored in `./data/` (SQLite DB + blob files). Back up this directory.
+
+For production hosting — single-node SQLite + Litestream + R2, managed Postgres,
+and object-storage blobs — see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## GitHub OAuth (Optional)
 

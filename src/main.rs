@@ -22,8 +22,11 @@ async fn main() {
     std::fs::create_dir_all("data").ok();
 
     let db = sema_pkg::db::connect(&config.database_url).await;
+    let blobs =
+        sema_pkg::blob::BlobStore::from_config(&config).expect("Failed to initialize blob store");
+    tracing::info!("Blob storage: {}", blobs.describe());
 
-    let state = Arc::new(AppState { db, config });
+    let state = Arc::new(AppState { db, config, blobs });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 
     let app = build_router(state.clone());

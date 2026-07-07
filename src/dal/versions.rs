@@ -6,7 +6,7 @@
 
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, Set, Statement,
+    PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 
 use crate::dal::time;
@@ -113,11 +113,11 @@ pub async fn download_target<C: ConnectionTrait>(
     version: &str,
 ) -> Result<Option<DownloadTarget>, DbErr> {
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             r#"SELECT pv.blob_key, pv.tarball_url FROM package_versions pv
                JOIN packages p ON p.id = pv.package_id
-               WHERE p.name = $1 AND pv.version = $2 AND pv.yanked = 0"#,
+               WHERE p.name = ? AND pv.version = ? AND pv.yanked = 0"#,
             [name.into(), version.into()],
         ))
         .await?;

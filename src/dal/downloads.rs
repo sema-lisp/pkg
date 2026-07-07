@@ -5,7 +5,7 @@
 //! `ON DUPLICATE KEY UPDATE` on MySQL). The date is generated in Rust.
 
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ConnectionTrait, DbErr, EntityTrait, Set, Statement};
+use sea_orm::{ConnectionTrait, DbErr, EntityTrait, Set};
 
 use crate::dal::time;
 use crate::entity::download_daily;
@@ -33,7 +33,11 @@ pub async fn record<C: ConnectionTrait>(
             ])
             .value(
                 download_daily::Column::Count,
-                sea_orm::sea_query::Expr::col(download_daily::Column::Count).add(1),
+                sea_orm::sea_query::Expr::col((
+                    download_daily::Entity,
+                    download_daily::Column::Count,
+                ))
+                .add(1),
             )
             .to_owned(),
         )
@@ -42,16 +46,18 @@ pub async fn record<C: ConnectionTrait>(
         .map(|_| ())
 }
 
-/// All-time download total for a package (0 if never downloaded).
 pub async fn total<C: ConnectionTrait>(db: &C, package_name: &str) -> Result<i64, DbErr> {
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
-            "SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE package_name = $1",
+            "SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE package_name = ?",
             [package_name.into()],
         ))
         .await?;
-    Ok(row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0))
+    if let Some(r) = row {
+        return Ok(crate::db::row_get_i64(&r, "cnt").unwrap_or(0));
+    }
+    Ok(0)
 }
 
 /// Daily download totals `(date, count)` on/after `cutoff`, oldest first. The
@@ -63,9 +69,9 @@ pub async fn daily_since<C: ConnectionTrait>(
     cutoff: &str,
 ) -> Result<Vec<(String, i64)>, DbErr> {
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            "SELECT download_date, SUM(count) as count FROM download_daily WHERE package_name = $1 AND download_date >= $2 GROUP BY download_date ORDER BY download_date ASC",
+            "SELECT download_date, SUM(count) as count FROM download_daily WHERE package_name = ? AND download_date >= ? GROUP BY download_date ORDER BY download_date ASC",
             [package_name.into(), cutoff.into()],
         ))
         .await?;
@@ -73,7 +79,7 @@ pub async fn daily_since<C: ConnectionTrait>(
         .iter()
         .filter_map(|r| {
             let date: String = r.try_get("", "download_date").ok()?;
-            let count: i64 = r.try_get("", "count").ok()?;
+            let count = crate::db::row_get_i64(r, "count")?;
             Some((date, count))
         })
         .collect())
@@ -85,9 +91,9 @@ pub async fn per_version<C: ConnectionTrait>(
     package_name: &str,
 ) -> Result<Vec<(String, i64)>, DbErr> {
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            "SELECT version, SUM(count) as total FROM download_daily WHERE package_name = $1 GROUP BY version ORDER BY total DESC",
+            "SELECT version, SUM(count) as total FROM download_daily WHERE package_name = ? GROUP BY version ORDER BY total DESC",
             [package_name.into()],
         ))
         .await?;
@@ -95,7 +101,7 @@ pub async fn per_version<C: ConnectionTrait>(
         .iter()
         .filter_map(|r| {
             let version: String = r.try_get("", "version").ok()?;
-            let total: i64 = r.try_get("", "total").ok()?;
+            let total = crate::db::row_get_i64(r, "total")?;
             Some((version, total))
         })
         .collect())

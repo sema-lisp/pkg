@@ -8,9 +8,7 @@
 //! 30-day download window binds a cutoff computed in Rust (see
 //! [`time::date_days_ago`]).
 
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Statement, Value,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Value};
 
 use crate::dal::time;
 use crate::entity::{package, report, user};
@@ -45,14 +43,14 @@ pub async fn stats<C: ConnectionTrait>(db: &C) -> Stats {
     let total_downloads: i64 = {
         let cutoff = time::date_days_ago(30);
         let result = db
-            .query_one(Statement::from_sql_and_values(
+            .query_one(crate::db::stmt(
                 db.get_database_backend(),
-                r#"SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE download_date >= $1"#,
+                r#"SELECT COALESCE(SUM(count), 0) as cnt FROM download_daily WHERE download_date >= ?"#,
                 [cutoff.into()],
             ))
             .await;
         match result {
-            Ok(Some(row)) => row.try_get_by_index::<i64>(0).unwrap_or(0),
+            Ok(Some(row)) => crate::db::row_get_i64(&row, "cnt").unwrap_or(0),
             _ => 0,
         }
     };
@@ -117,7 +115,7 @@ pub async fn list_users<C: ConnectionTrait>(
     // Get total count
     let count_sql = format!("SELECT COUNT(*) as cnt FROM users u WHERE {where_sql}");
     let count_result = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             &count_sql,
             binds.clone(),
@@ -138,19 +136,12 @@ pub async fn list_users<C: ConnectionTrait>(
            LEFT JOIN oauth_connections oc ON oc.user_id = u.id AND oc.provider = 'github' AND oc.revoked_at IS NULL
            WHERE {where_sql}
            ORDER BY u.created_at DESC
-           LIMIT ? OFFSET ?"#
+           LIMIT {} OFFSET {}"#,
+        filter.limit, filter.offset
     );
 
-    let mut all_binds = binds;
-    all_binds.push(filter.limit.into());
-    all_binds.push(filter.offset.into());
-
     let rows = db
-        .query_all(Statement::from_sql_and_values(
-            db.get_database_backend(),
-            &sql,
-            all_binds,
-        ))
+        .query_all(crate::db::stmt(db.get_database_backend(), &sql, binds))
         .await
         .unwrap_or_default();
 
@@ -235,14 +226,14 @@ pub async fn list_packages<C: ConnectionTrait>(
     // Get total count
     let count_sql = format!("SELECT COUNT(*) as cnt FROM packages p WHERE {where_sql}");
     let count_result = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one(crate::db::stmt(
             db.get_database_backend(),
             &count_sql,
             binds.clone(),
         ))
         .await;
     let total: i64 = match count_result {
-        Ok(Some(row)) => row.try_get_by_index::<i64>(0).unwrap_or(0),
+        Ok(Some(row)) => crate::db::row_get_i64(&row, "cnt").unwrap_or(0),
         _ => 0,
     };
 
@@ -256,19 +247,12 @@ pub async fn list_packages<C: ConnectionTrait>(
            FROM packages p
            WHERE {where_sql}
            ORDER BY p.created_at DESC
-           LIMIT ? OFFSET ?"#
+           LIMIT {} OFFSET {}"#,
+        filter.limit, filter.offset
     );
 
-    let mut all_binds = binds;
-    all_binds.push(filter.limit.into());
-    all_binds.push(filter.offset.into());
-
     let rows = db
-        .query_all(Statement::from_sql_and_values(
-            db.get_database_backend(),
-            &sql,
-            all_binds,
-        ))
+        .query_all(crate::db::stmt(db.get_database_backend(), &sql, binds))
         .await
         .unwrap_or_default();
 

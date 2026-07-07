@@ -11,12 +11,42 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub blob_dir: String,
+    // S3-compatible blob storage (Cloudflare R2, MinIO, S3). When `blob_s3_bucket`
+    // is set, tarballs go to object storage instead of `blob_dir` — decoupling
+    // durability from the compute node for stateless / multi-instance deploys.
+    pub blob_s3_bucket: Option<String>,
+    pub blob_s3_endpoint: Option<String>,
+    pub blob_s3_region: Option<String>,
+    pub blob_s3_access_key_id: Option<String>,
+    pub blob_s3_secret_access_key: Option<String>,
     pub base_url: String,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub oauth_token_key: String,
     pub max_tarball_bytes: usize,
     pub max_dependencies: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            host: "0.0.0.0".into(),
+            port: 3000,
+            database_url: "sqlite://data/registry.db?mode=rwc".into(),
+            blob_dir: "data/blobs".into(),
+            blob_s3_bucket: None,
+            blob_s3_endpoint: None,
+            blob_s3_region: None,
+            blob_s3_access_key_id: None,
+            blob_s3_secret_access_key: None,
+            base_url: "http://localhost:3000".into(),
+            github_client_id: None,
+            github_client_secret: None,
+            oauth_token_key: DEFAULT_OAUTH_TOKEN_KEY.into(),
+            max_tarball_bytes: 50 * 1024 * 1024, // 50 MB
+            max_dependencies: 64,
+        }
+    }
 }
 
 impl Config {
@@ -30,6 +60,11 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://data/registry.db?mode=rwc".into()),
             blob_dir: env::var("BLOB_DIR").unwrap_or_else(|_| "data/blobs".into()),
+            blob_s3_bucket: env::var("BLOB_S3_BUCKET").ok(),
+            blob_s3_endpoint: env::var("BLOB_S3_ENDPOINT").ok(),
+            blob_s3_region: env::var("BLOB_S3_REGION").ok(),
+            blob_s3_access_key_id: env::var("BLOB_S3_ACCESS_KEY_ID").ok(),
+            blob_s3_secret_access_key: env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),

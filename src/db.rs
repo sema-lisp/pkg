@@ -1,8 +1,31 @@
 use crate::migration::Migrator;
-use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
+use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
 
 pub type Db = DatabaseConnection;
+
+/// A helper to build a Statement from raw SQL, automatically translating
+/// '?' placeholders to Postgres '$1', '$2', etc., when the backend is Postgres.
+pub fn stmt<I>(backend: DatabaseBackend, sql: &str, values: I) -> Statement
+where
+    I: IntoIterator<Item = sea_orm::Value>,
+{
+    let sql = if backend == DatabaseBackend::Postgres {
+        let mut result = String::new();
+        let mut placeholder_idx = 1;
+        for part in sql.split('?') {
+            if !result.is_empty() {
+                result.push_str(&format!("${placeholder_idx}"));
+                placeholder_idx += 1;
+            }
+            result.push_str(part);
+        }
+        result
+    } else {
+        sql.to_string()
+    };
+    Statement::from_sql_and_values(backend, sql, values)
+}
 
 /// Connect to the registry database and bring the schema up to date.
 ///
@@ -41,4 +64,22 @@ pub async fn connect(database_url: &str) -> Db {
         .expect("Failed to run migrations");
 
     db
+}
+
+pub fn row_get_i64(row: &sea_orm::QueryResult, col: &str) -> Option<i64> {
+    if let Ok(v) = row.try_get::<i64>("", col) {
+        return Some(v);
+    }
+    if let Ok(v) = row.try_get::<sea_orm::prelude::Decimal>("", col) {
+        if let Ok(n) = v.to_string().parse::<f64>() {
+            return Some(n as i64);
+        }
+    }
+    if let Ok(v) = row.try_get::<f64>("", col) {
+        return Some(v as i64);
+    }
+    if let Ok(v) = row.try_get::<i32>("", col) {
+        return Some(v as i64);
+    }
+    None
 }

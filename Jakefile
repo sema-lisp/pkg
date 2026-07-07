@@ -110,18 +110,18 @@ task e2e headed="":
 @desc "Test against one DB driver in Docker (params: driver=sqlite|postgres|mysql)"
 task driver driver="sqlite":
     @needs docker
-    [ "{{driver}}" = "sqlite" ] || docker compose -f docker-compose.test.yml up -d {{driver}}
-    docker compose -f docker-compose.test.yml run --rm test-{{driver}}
-    [ "{{driver}}" = "sqlite" ] || docker compose -f docker-compose.test.yml stop {{driver}}
+    [ "{{driver}}" = "sqlite" ] || docker compose -f docker-compose.test.yml up -d {{driver}} minio minio-create-bucket
+    docker compose -f docker-compose.test.yml run --build --rm test-{{driver}}
+    [ "{{driver}}" = "sqlite" ] || docker compose -f docker-compose.test.yml stop {{driver}} minio
 
 @group test
 @desc "Run the suite against SQLite + Postgres + MySQL (Docker)"
 task all-drivers:
     @needs docker
-    docker compose -f docker-compose.test.yml up -d postgres mysql
-    docker compose -f docker-compose.test.yml run --rm test-sqlite
-    docker compose -f docker-compose.test.yml run --rm test-postgres
-    docker compose -f docker-compose.test.yml run --rm test-mysql
+    docker compose -f docker-compose.test.yml up -d postgres mysql minio minio-create-bucket
+    docker compose -f docker-compose.test.yml run --build --rm test-sqlite
+    docker compose -f docker-compose.test.yml run --build --rm test-postgres
+    docker compose -f docker-compose.test.yml run --build --rm test-mysql
     docker compose -f docker-compose.test.yml down -v
 
 # ── Deploy ───────────────────────────────────────────────────

@@ -23,6 +23,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     pub db: db::Db,
     pub config: config::Config,
+    pub blobs: blob::BlobStore,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {

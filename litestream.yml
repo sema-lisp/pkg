@@ -1,0 +1,13 @@
+# Litestream config for docker-compose.prod.yml — replicates the SQLite DB to R2.
+# Credentials come from LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY.
+# Restore before first boot with:
+#   litestream restore -config litestream.yml /data/registry.db
+dbs:
+  - path: /data/registry.db
+    replicas:
+      - type: s3
+        bucket: sema-packages
+        path: litestream/registry.db
+        endpoint: https://ACCOUNT_ID.r2.cloudflarestorage.com
+        region: auto
+        force-path-style: true

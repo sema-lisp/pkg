@@ -5,9 +5,7 @@
 //! `status = 'open'` so a second resolver is a no-op. Timestamps come from
 //! [`time`].
 
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set, Statement,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
 
 use crate::dal::time;
 use crate::entity::report;
@@ -77,18 +75,21 @@ pub async fn list<C: ConnectionTrait>(
         .await
         .unwrap_or(0) as i64;
 
-    // Raw SQL for the LEFT JOIN with users.
+    let sql = format!(
+        r#"SELECT r.id, u.username as reporter, r.target_type, r.target_name,
+              r.report_type, r.reason, r.status, r.created_at
+           FROM reports r
+           LEFT JOIN users u ON u.id = r.reporter_id
+           WHERE r.status = ?
+           ORDER BY r.created_at DESC
+           LIMIT {} OFFSET {}"#,
+        limit, offset
+    );
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all(crate::db::stmt(
             db.get_database_backend(),
-            r#"SELECT r.id, u.username as reporter, r.target_type, r.target_name,
-                  r.report_type, r.reason, r.status, r.created_at
-               FROM reports r
-               LEFT JOIN users u ON u.id = r.reporter_id
-               WHERE r.status = ?
-               ORDER BY r.created_at DESC
-               LIMIT ? OFFSET ?"#,
-            [status.into(), limit.into(), offset.into()],
+            &sql,
+            [status.into()],
         ))
         .await
         .unwrap_or_default();
@@ -123,7 +124,7 @@ pub async fn resolve<C: ConnectionTrait>(
     status: &str,
 ) -> u64 {
     let result = db
-        .execute(Statement::from_sql_and_values(
+        .execute(crate::db::stmt(
             db.get_database_backend(),
             "UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
             [

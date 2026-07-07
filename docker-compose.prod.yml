@@ -1,0 +1,43 @@
+# Production stack: single-node SQLite + Litestream continuous replication to R2,
+# with package tarballs in the same (or a separate) R2 bucket. The VM holds no
+# irreplaceable state — see DEPLOYMENT.md (Path A) for restore + caveats.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Requires an .env with R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and (if you use
+# GitHub OAuth) a unique 32-byte OAUTH_TOKEN_KEY.
+
+services:
+  registry:
+    image: ghcr.io/sema-lisp/sema-pkg:latest # or: build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - registry-data:/data
+    environment:
+      DATABASE_URL: "sqlite:///data/registry.db?mode=rwc"
+      BASE_URL: ${BASE_URL:?set BASE_URL to your https origin}
+      RUST_LOG: info
+      BLOB_S3_BUCKET: ${BLOB_S3_BUCKET:-sema-packages}
+      BLOB_S3_ENDPOINT: ${BLOB_S3_ENDPOINT:?set BLOB_S3_ENDPOINT to your R2 endpoint}
+      BLOB_S3_REGION: auto
+      BLOB_S3_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
+      BLOB_S3_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
+      OAUTH_TOKEN_KEY: ${OAUTH_TOKEN_KEY:-}
+
+  litestream:
+    image: litestream/litestream:latest
+    restart: unless-stopped
+    depends_on:
+      - registry
+    volumes:
+      - registry-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+    environment:
+      LITESTREAM_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
+      LITESTREAM_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
+    command: replicate
+
+volumes:
+  registry-data:
