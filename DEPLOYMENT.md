@@ -120,10 +120,30 @@ SQLite + local blobs — no object storage required. Good for a quick public
 instance; back up the volume (`fly volumes snapshots`) or add Litestream/R2 as in
 Path A for real durability.
 
+First-time setup:
+
 ```bash
-fly launch --copy-config      # first time
-fly secrets set OAUTH_TOKEN_KEY=$(openssl rand -base64 24)   # if using OAuth
-jake deploy                   # fly deploy, with a confirmation prompt
+fly auth login
+fly apps create sema-pkg                                    # or `fly launch --no-deploy`
+fly volumes create sema_pkg_data --region ams --size 3      # matches [mounts] in fly.toml
+```
+
+Point `BASE_URL` (in `fly.toml`) at the real origin — `https://sema-pkg.fly.dev`
+until a custom domain's DNS + cert are in place — so links and `Secure` cookies
+are correct. Then, optionally for GitHub OAuth:
+
+```bash
+fly secrets set OAUTH_TOKEN_KEY=$(openssl rand -base64 24) \
+  GITHUB_CLIENT_ID=… GITHUB_CLIENT_SECRET=…
+```
+
+Deploy and make the first admin (the API can't — the DB is on the machine):
+
+```bash
+jake deploy                        # = fly deploy, with a confirmation prompt
+# register a user in the web UI, then:
+fly ssh console -C "sqlite3 /data/registry.db \
+  \"UPDATE users SET is_admin = 1 WHERE username = 'you'\""
 ```
 
 ## Cloudflare R2 setup (for Paths A and B)

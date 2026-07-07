@@ -33,4 +33,6 @@ primary_region = "ams"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  # Headroom for concurrent readers plus in-flight tarball uploads (up to
+  # ~50 MB each buffered before storage).
+  memory = "1gb"
