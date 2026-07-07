@@ -9,7 +9,10 @@ primary_region = "ams"
   PORT = "8080"
   DATABASE_URL = "sqlite:///data/registry.db?mode=rwc"
   BLOB_DIR = "/data/blobs"
-  BASE_URL = "https://pkg.sema-lang.com"
+  # Blobs live in Tigris (fly storage create injects BUCKET_NAME + AWS_* secrets);
+  # BLOB_DIR is the fallback only. Switch BASE_URL to the custom domain once its
+  # DNS + cert are set up (fly certs add pkg.sema-lang.com).
+  BASE_URL = "https://sema-pkg.fly.dev"
   RUST_LOG = "info"
 
 [http_service]
