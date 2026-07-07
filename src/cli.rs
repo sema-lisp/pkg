@@ -32,6 +32,7 @@ Usage: sema-pkg admin <command>
   ban     <username>                 ban a user
   unban   <username>                 lift a ban
   reset-password <username> <pw>     set a user's password
+  token-create <username> [name]     mint an API token for a user (prints it once)
   revoke-tokens  <username>          revoke all of a user's API tokens
   list                               list admins";
 
@@ -100,6 +101,7 @@ async fn run_admin(args: &[String]) -> Result<String, String> {
         Some("ban") => set_ban(&db, args.get(1), true).await,
         Some("unban") => set_ban(&db, args.get(1), false).await,
         Some("reset-password") => reset_password(&db, args.get(1), args.get(2)).await,
+        Some("token-create") => token_create(&db, args.get(1), args.get(2)).await,
         Some("revoke-tokens") => revoke_tokens(&db, args.get(1)).await,
         Some("list") => list_admins(&db).await,
         _ => Err(ADMIN_USAGE.to_string()),
@@ -173,6 +175,34 @@ async fn reset_password(
     )
     .await;
     Ok(format!("Password reset for {name}"))
+}
+
+async fn token_create(
+    db: &db::Db,
+    username: Option<&String>,
+    name: Option<&String>,
+) -> Result<String, String> {
+    let username = username.ok_or("usage: sema-pkg admin token-create <username> [name]")?;
+    let token_name = name.map(String::as_str).unwrap_or("cli");
+    let id = user_id(db, username).await?;
+    let token = auth::generate_token();
+    dal::tokens::create(db, id, token_name, &auth::hash_token(&token))
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "token_create",
+        Some("user"),
+        Some(username),
+        Some(&format!("created token '{token_name}'")),
+    )
+    .await;
+    // The plaintext token is shown only here — it isn't recoverable later.
+    Ok(format!(
+        "Created token '{token_name}' for {username}. Save it now (shown once):\n\n  {token}\n\n\
+         Use it with: sema pkg login --token {token}"
+    ))
 }
 
 async fn revoke_tokens(db: &db::Db, username: Option<&String>) -> Result<String, String> {

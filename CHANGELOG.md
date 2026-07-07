@@ -12,6 +12,9 @@ steps required.
 
 ### Added
 
+- **`sema-pkg admin token-create <user> [name]`** — mint an API token for a user
+  from the operator CLI (no browser login), so a bot/house account can publish
+  without a web session. Prints the token once; audit-logged.
 - **Built-in Litestream backup on Fly.io.** The container can now run Litestream
   in-process (`LITESTREAM_REPLICATE=1`), continuously streaming the SQLite WAL to
   Tigris and restoring automatically onto a fresh volume — so the machine holds

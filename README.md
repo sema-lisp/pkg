@@ -229,6 +229,7 @@ Operate the registry from the CLI (works on any backend, no manual DB edits):
 sema-pkg admin create <user> <email> <pw>   # create the first admin (API can't)
 sema-pkg admin promote|demote|ban|unban <user>
 sema-pkg admin reset-password <user> <pw>   # recover a locked-out account
+sema-pkg admin token-create <user> [name]   # mint an API token (e.g. for a bot account)
 sema-pkg admin revoke-tokens <user>         # after a token leak
 sema-pkg package yank <name> <version>      # moderation / takedowns
 sema-pkg package remove <name>

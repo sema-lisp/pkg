@@ -309,6 +309,7 @@ sema-pkg admin demote <username>             # revoke admin role
 sema-pkg admin ban <username>                # ban (also revokes tokens + sessions)
 sema-pkg admin unban <username>
 sema-pkg admin reset-password <username> <new-password>
+sema-pkg admin token-create <username> [name]  # mint an API token (printed once)
 sema-pkg admin revoke-tokens <username>      # invalidate all their API tokens
 ```
 
