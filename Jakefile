@@ -51,10 +51,10 @@ task run:
 # OpenTelemetry request+DB tracing to a JSONL file. Each span
 # (request → handler → query) is one line in the file.
 @group dev
-@desc "Run the registry with OpenTelemetry tracing to a file (params: file=traces.jsonl)"
-task trace file="traces.jsonl":
+@desc "Run the registry with OpenTelemetry tracing to a file (params: out=traces.jsonl)"
+task trace out="traces.jsonl":
     @needs cargo
-    OTEL_TRACES_EXPORTER=file OTEL_TRACE_FILE={{file}} cargo run --release
+    OTEL_TRACES_EXPORTER=file OTEL_TRACE_FILE={{out}} cargo run --release
 
 @group dev
 @desc "Seed a fresh DB, build + start in Docker, then tail logs (params: port=3000)"
