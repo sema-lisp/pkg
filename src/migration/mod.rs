@@ -16,6 +16,7 @@ mod m003_meta_registry;
 mod m004_admin;
 mod m005_download_daily;
 mod m006_readme;
+mod m007_perf_indexes;
 
 pub struct Migrator;
 
@@ -29,6 +30,7 @@ impl MigratorTrait for Migrator {
             Box::new(m004_admin::Migration),
             Box::new(m005_download_daily::Migration),
             Box::new(m006_readme::Migration),
+            Box::new(m007_perf_indexes::Migration),
         ]
     }
 }
