@@ -1,0 +1,40 @@
+# OpenTelemetry Collector config for the local observability stack.
+# Traces arrive over OTLP from the registry and fan out to Jaeger. Metrics are
+# scraped from the registry's Prometheus /metrics and re-exported for Prometheus
+# — so the OTel pipeline carries both signals.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: sema-pkg
+          scrape_interval: 15s
+          static_configs:
+            # The registry runs on the host; adjust for your deployment.
+            - targets: ["host.docker.internal:3000"]
+
+processors:
+  batch: {}
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      receivers: [prometheus]
+      processors: [batch]
+      exporters: [prometheus]

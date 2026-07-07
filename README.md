@@ -51,28 +51,36 @@ cargo run --features seed --bin seed -- --fresh --large
 For scale testing, `--huge` seeds 20k users and 1M packages (~4.5M versions) in
 under a minute on SQLite; `SEED_USERS` / `SEED_PACKAGES` override any preset.
 
-## Tracing (OpenTelemetry)
+## Observability
 
-Build with the `otel` feature to trace every request and DB query to a JSONL
-file — one span per line — with zero external infrastructure:
+Traces (OpenTelemetry) and metrics (Prometheus) are built in and **off until
+configured** — nothing is exported by default. See
+[DEPLOYMENT.md](DEPLOYMENT.md#observability) for a full local Jaeger + Prometheus
++ Grafana stack.
+
+**Traces** — pick an exporter with `OTEL_TRACES_EXPORTER`:
 
 ```bash
-jake trace                      # runs with --features otel, writes traces.jsonl
-# or: OTEL_TRACE_FILE=t.jsonl cargo run --release --features otel
+jake trace                                   # → traces.jsonl (one span per line)
+OTEL_TRACES_EXPORTER=otlp \
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 sema-pkg   # → Jaeger/Tempo
 ```
 
-Each span records `trace_id`, `parent_span_id`, `name`, `duration_ms`, and
-attributes including the source `code.file.path`/`code.line.number`. Requests
-(`tower_http`), handlers, and DAL queries nest into a `request → handler → query`
-tree. Render the slowest spans grouped by trace:
+Requests, handlers, and DAL queries nest into a `request → handler → query` tree;
+each span carries `duration_ms` and the source `code.file.path`/`line`. For the
+file exporter, render the slowest spans with jq:
 
 ```bash
 jq -r '[.name,(.duration_ms|tostring)+"ms",(.attributes.op//"")]|@tsv' traces.jsonl \
   | sort -t$'\t' -k2 -rn | column -t -s$'\t'
 ```
 
-The feature is opt-in and compiles out of the production binary. `RUST_LOG`
-controls capture (default `info,sema_pkg=trace,tower_http=debug`).
+**Metrics** — `METRICS_ENABLED=true` serves Prometheus RED metrics at `/metrics`
+(`http_requests_total`, `http_request_duration_seconds`, `http_requests_in_flight`),
+labelled by matched route.
+
+`RUST_LOG` sets log verbosity; `OTEL_LOG` sets span capture independently, so
+quiet logs and rich traces coexist.
 
 ## Configuration
 

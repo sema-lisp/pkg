@@ -12,7 +12,6 @@ pub mod github_sync;
 pub mod health;
 pub mod migration;
 pub mod ratelimit;
-#[cfg(feature = "otel")]
 pub mod telemetry;
 pub mod web;
 
@@ -25,10 +24,17 @@ use std::sync::Arc;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
+/// Renders the current Prometheus metrics as an exposition-format string. An
+/// `Arc<dyn Fn>` so the type is observability-feature-agnostic (the concrete
+/// Prometheus handle lives behind the `observability` feature).
+pub type MetricsRender = Arc<dyn Fn() -> String + Send + Sync>;
+
 pub struct AppState {
     pub db: db::Db,
     pub config: config::Config,
     pub blobs: blob::BlobStore,
+    /// `Some` when Prometheus metrics are enabled; serves `/metrics`.
+    pub metrics_render: Option<MetricsRender>,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -36,7 +42,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     // Health probes, web pages, static assets, and OAuth redirects — never rate
     // limited (probes and asset fetches would otherwise trip the limiter).
-    let public = Router::new()
+    let mut public = Router::new()
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
         // Web pages
@@ -52,6 +58,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/auth/github/callback", get(github::callback))
         // Static files
         .nest_service("/static", ServeDir::new("static"));
+
+    // Prometheus scrape endpoint, only when metrics are enabled. Unlimited and
+    // unauthenticated (scrape it on a private network / behind the proxy).
+    if state.metrics_render.is_some() {
+        public = public.route("/metrics", get(metrics_endpoint));
+    }
 
     // Auth endpoints — stricter, fixed rate limit (credential brute-forcing).
     let auth = Router::new()
@@ -145,12 +157,28 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/reports", post(api::admin::submit_report));
     let api = ratelimit::global(api, config);
 
-    // Outermost: a span per request (method, path, status, latency) that parents
-    // the handler/DAL spans. A no-op without a tracing subscriber; exported to
-    // OpenTelemetry when built with `--features otel`.
-    public
+    let app = public
         .merge(auth)
         .merge(api)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        // Prometheus RED metrics per matched route (runs inside routing, so the
+        // route template is available for a bounded-cardinality label). A no-op
+        // until a metrics recorder is installed.
+        .route_layer(axum::middleware::from_fn(telemetry::track_metrics));
+
+    // Outermost: a span per request (method, path, status, latency) that parents
+    // the handler/DAL spans. A no-op without a tracing subscriber; exported to
+    // OpenTelemetry when traces are configured.
+    app.layer(TraceLayer::new_for_http()).with_state(state)
+}
+
+/// Serve the current Prometheus metrics. Only routed when metrics are enabled,
+/// so `metrics_render` is always `Some` here.
+async fn metrics_endpoint(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match &state.metrics_render {
+        Some(render) => render().into_response(),
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
 }

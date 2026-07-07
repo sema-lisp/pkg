@@ -1,0 +1,50 @@
+# Local observability stack for sema-pkg. An OpenTelemetry Collector is the hub:
+# the registry sends OTLP traces to it and it scrapes the registry's /metrics, so
+# the whole OTel pipeline carries both signals. Traces fan out to Jaeger, metrics
+# to Prometheus, and Grafana reads both.
+#
+#   docker compose -f docker-compose.observability.yml up -d
+#   OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+#     METRICS_ENABLED=true sema-pkg
+#
+# Jaeger UI :16686 · Prometheus :9090 · Grafana :3001 (anonymous admin)
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC (traces in from the registry)
+      - "8889:8889" # Prometheus exporter (metrics out to Prometheus)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # UI
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus

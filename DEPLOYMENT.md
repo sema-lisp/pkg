@@ -193,6 +193,58 @@ server stops accepting new connections and drains in-flight requests before
 exiting. No special config needed. Give the orchestrator enough grace time — the
 `stop_grace_period` in the compose files is set accordingly.
 
+## Observability
+
+Traces and metrics are compiled into the binary and **off until configured** —
+no exporter runs and `/metrics` is not served unless you opt in. Log verbosity
+(`RUST_LOG`) and trace capture (`OTEL_LOG`) are independent, so you can run quiet
+logs with rich traces.
+
+### Traces (OpenTelemetry)
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `OTEL_TRACES_EXPORTER` | `none` (default), `file`, `otlp` | Where spans go |
+| `OTEL_TRACE_FILE` | path (default `traces.jsonl`) | File exporter target |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://jaeger:4317` | OTLP/gRPC collector |
+| `OTEL_SERVICE_NAME` | default `sema-pkg` | Service name in the tracing UI |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.0`–`1.0` (default `1.0`) | Head sampling ratio |
+| `OTEL_LOG` | tracing filter | Which spans are captured |
+
+Point `otlp` at Jaeger, Grafana Tempo, or an OpenTelemetry Collector (all accept
+OTLP/gRPC on `:4317`). In production, sample: `OTEL_TRACES_SAMPLER_ARG=0.05`.
+
+### Metrics (Prometheus)
+
+`METRICS_ENABLED=true` serves Prometheus metrics at `GET /metrics`
+(unauthenticated — scrape it on a private network or behind the proxy):
+
+- **HTTP RED**, per matched route: `http_requests_total`,
+  `http_request_duration_seconds` (histogram), `http_requests_in_flight`.
+- **Process**: `process_resident_memory_bytes`, `process_cpu_seconds_total`,
+  `process_open_fds`, `process_threads`, …
+- **Application** (refreshed every 15s): `sema_packages_total`,
+  `sema_users_total`, `sema_users_banned`, `sema_reports_open`,
+  `sema_downloads_30d`, and `sema_build_info{version}`.
+
+To carry metrics into an OTLP pipeline (Grafana, an OTel backend), point an
+OpenTelemetry Collector's `prometheus` receiver at `/metrics` — the stack below
+does exactly that, so metrics and traces both flow through OTel.
+
+### Local stack
+
+`docker-compose.observability.yml` runs an OpenTelemetry Collector (hub) with
+Jaeger + Prometheus + Grafana. The registry sends OTLP traces to the collector
+and the collector scrapes its `/metrics`:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d
+# then run the registry pointed at the collector:
+OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+  METRICS_ENABLED=true sema-pkg
+# Jaeger UI :16686 · Prometheus :9090 · Grafana :3001
+```
+
 ## Production checklist
 
 - [ ] `BASE_URL` is your real `https://` origin (enables `Secure` cookies).

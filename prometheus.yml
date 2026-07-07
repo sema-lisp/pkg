@@ -1,0 +1,11 @@
+# Prometheus scrapes the OpenTelemetry Collector's exporter, which collects the
+# registry's /metrics (see otel-collector-config.yaml). To skip the collector,
+# point this straight at the registry: target host.docker.internal:3000,
+# metrics_path /metrics.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]

@@ -1,18 +1,14 @@
-//! Performance indexes surfaced by the 1M-package stress test + OpenTelemetry
-//! traces.
+//! Secondary indexes for the admin and listing read paths. Plain single-column
+//! indexes, portable across SQLite/Postgres/MySQL.
 //!
 //! - `owners(user_id)`: the admin user listing counts a user's packages with a
 //!   correlated `COUNT(*) FROM owners WHERE user_id = ?`. The table's PK is
-//!   `(package_id, user_id)`, so a lookup by `user_id` alone could not use it
-//!   and full-scanned the whole `owners` table per row — the dominant cost in a
-//!   12 s admin page. This index makes it a point lookup.
-//! - `users(created_at)` / `packages(created_at)`: both admin/user and
-//!   package listings `ORDER BY created_at DESC`; without an index that is a
-//!   full sort of the table.
+//!   `(package_id, user_id)`, so a lookup by `user_id` alone cannot use it;
+//!   this index makes it a point lookup instead of a full table scan per row.
+//! - `users(created_at)` / `packages(created_at)`: the admin/user and package
+//!   listings `ORDER BY created_at DESC`; the index avoids a full sort.
 //! - `package_versions(published_at)`: the homepage orders recent releases by
 //!   `published_at DESC`.
-//!
-//! All are plain secondary indexes and portable across SQLite/Postgres/MySQL.
 
 use sea_orm_migration::prelude::*;
 

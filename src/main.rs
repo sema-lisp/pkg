@@ -5,15 +5,13 @@ use std::sync::Arc;
 async fn main() {
     dotenvy::dotenv().ok();
 
-    // With `--features otel`, install OpenTelemetry file tracing; the guard
-    // flushes buffered spans when it drops at the end of `main`. Otherwise the
-    // plain fmt logger.
-    #[cfg(feature = "otel")]
+    // Install the tracing subscriber with OpenTelemetry span export when
+    // configured; the guard flushes on drop at the end of `main`. Every exporter
+    // is a no-op until its env var is set.
     let _otel_guard = sema_pkg::telemetry::init();
-    #[cfg(not(feature = "otel"))]
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+
+    // Prometheus recorder + `/metrics`, when `METRICS_ENABLED=true`.
+    let metrics_render = sema_pkg::telemetry::init_metrics();
 
     let config = sema_pkg::config::Config::from_env();
 
@@ -32,7 +30,17 @@ async fn main() {
         sema_pkg::blob::BlobStore::from_config(&config).expect("Failed to initialize blob store");
     tracing::info!("Blob storage: {}", blobs.describe());
 
-    let state = Arc::new(AppState { db, config, blobs });
+    // Publish process + application gauges alongside the per-request metrics.
+    if metrics_render.is_some() {
+        sema_pkg::telemetry::spawn_collectors(db.clone());
+    }
+
+    let state = Arc::new(AppState {
+        db,
+        config,
+        blobs,
+        metrics_render,
+    });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 
     let app = build_router(state.clone());

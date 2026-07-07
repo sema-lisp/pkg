@@ -1,16 +1,14 @@
 //! Engine-portable dev-data seeder for the Sema package registry.
 //!
-//! Replaces the old `seed.sh` (slow, API-driven, SQLite-adjacent) and
-//! `seed_stress.py` (SQLite-only, produced un-loginable users). This tool talks
-//! to the database through the app's own SeaORM entities, so it works against
-//! SQLite, PostgreSQL, or MySQL from one `DATABASE_URL`, inserts in batched
-//! transactions, and produces data that actually works: real Argon2 password
-//! hashes (every seeded user logs in with the dev password), a real printed API
-//! token, and real content-addressed blobs for the featured packages.
+//! Writes through the app's own SeaORM entities, so it works against SQLite,
+//! PostgreSQL, or MySQL from one `DATABASE_URL`. Seeded data is fully usable:
+//! real Argon2 password hashes (every user logs in with the dev password), a
+//! real printed API token, and real content-addressed blobs for the featured
+//! packages.
 //!
-//! Bulk data is generated and inserted in streaming batches (per-batch
-//! transactions), so memory stays bounded even at `--huge` scale (1M packages)
-//! — the seeder never materializes all rows at once.
+//! Bulk data is generated and inserted in streaming per-batch transactions, so
+//! memory stays bounded at `--huge` scale (1M packages) — rows are never all
+//! materialized at once.
 //!
 //! Usage:
 //!   cargo run --features seed --bin seed              # small, realistic dev set
