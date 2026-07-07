@@ -22,7 +22,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
+use axum::{
+    extract::Request,
+    http::{header::RETRY_AFTER, HeaderValue, StatusCode},
+    middleware::Next,
+    response::Response,
+    Router,
+};
 use tower_governor::{
     governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
 };
@@ -96,6 +102,30 @@ where
         return router;
     }
     apply(router, 1, 5)
+}
+
+/// Ensure every `429 Too Many Requests` carries an actionable `Retry-After`.
+///
+/// `tower_governor`'s `use_headers()` emits `Retry-After` in whole seconds, so a
+/// sub-second replenish interval (any tier above 1 rps) rounds down to
+/// `Retry-After: 0` — which tells a client to retry *immediately* and get
+/// throttled again. Floor it at 1 second so a compliant client backs off
+/// meaningfully. Values of 1s or more (e.g. the auth tier) are left untouched.
+pub async fn ensure_retry_after(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+        let needs_floor = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .is_none_or(|secs| secs < 1);
+        if needs_floor {
+            resp.headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+    }
+    resp
 }
 
 /// GCRA replenish interval for a sustained requests-per-second rate.

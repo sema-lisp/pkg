@@ -2948,3 +2948,42 @@ async fn test_install_path_not_throttled_by_global_burst() {
         );
     }
 }
+
+
+#[tokio::test]
+async fn test_429_has_actionable_retry_after() {
+    // The rate limiter's sub-second replenish rounds Retry-After down to 0s,
+    // which would tell a client to retry immediately. The ensure_retry_after
+    // middleware floors it at 1s so a compliant client backs off.
+    let (app, _dir) = test_app_rate_limited().await;
+    let mut saw_429 = false;
+    for _ in 0..30 {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.88")
+                    .body(Body::from(
+                        serde_json::json!({"username": "n", "password": "x"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if res.status() == StatusCode::TOO_MANY_REQUESTS {
+            let ra = res
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .expect("429 must carry a numeric Retry-After");
+            assert!(ra >= 1, "Retry-After must be at least 1s, got {ra}");
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(saw_429, "expected a 429 to inspect");
+}

@@ -80,3 +80,7 @@ steps required.
   instead of sharing the strict general limit (20/40) — resolving a project with
   many dependencies was tripping the shared per-IP burst and getting 429'd.
   Publishing, search, and admin stay on the tighter general tier.
+- Every `429 Too Many Requests` now carries an actionable `Retry-After` header.
+  The limiter's sub-second replenish rounded `Retry-After` down to `0`, telling
+  clients to retry immediately (and get throttled again); it's now floored at
+  1 second so compliant clients back off correctly.

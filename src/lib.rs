@@ -176,7 +176,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Prometheus RED metrics per matched route (runs inside routing, so the
         // route template is available for a bounded-cardinality label). A no-op
         // until a metrics recorder is installed.
-        .route_layer(axum::middleware::from_fn(telemetry::track_metrics));
+        .route_layer(axum::middleware::from_fn(telemetry::track_metrics))
+        // Runs outside the per-tier governor layers so it can see (and fix up)
+        // the 429s they emit: guarantees an actionable `Retry-After`.
+        .layer(axum::middleware::from_fn(ratelimit::ensure_retry_after));
 
     // Outermost: a span per request (method, path, status, latency) that parents
     // the handler/DAL spans. A no-op without a tracing subscriber; exported to
