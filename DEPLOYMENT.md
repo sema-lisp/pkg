@@ -252,7 +252,7 @@ managed DB's own backups. WAL mode is enabled by the registry automatically.
 - **Bare binary (Path C):** run `litestream replicate -exec sema-pkg` yourself.
 
 All three read the same `litestream.yml`, which keeps **7 days** of history with
-a daily snapshot (tune `retention` / `snapshot-interval`).
+a daily snapshot (tune the root `snapshot.retention` / `snapshot.interval`).
 
 **Restore** rebuilds the DB from the latest replica. On Fly this happens
 automatically when the volume is empty (the entrypoint runs
@@ -263,8 +263,22 @@ existing DB). To restore manually:
 litestream restore -config /etc/litestream.yml /data/registry.db
 ```
 
-**Verify your backup once** by actually restoring to a scratch path and checking
-row counts — an untested backup isn't a backup.
+**Verify your backup once** — an untested backup isn't a backup. Restore to a
+scratch path and boot the registry against it (from anywhere with the bucket
+credentials, e.g. your laptop):
+
+```bash
+# 1. Restore the latest replica to a scratch DB (env: LITESTREAM_BUCKET,
+#    LITESTREAM_ENDPOINT, LITESTREAM_ACCESS_KEY_ID, LITESTREAM_SECRET_ACCESS_KEY).
+litestream restore -config litestream.yml -o /tmp/drill.db /data/registry.db
+
+# 2. Boot the registry against it and check it reads the data.
+DATABASE_URL="sqlite:///tmp/drill.db?mode=rwc" BLOB_DIR=/tmp/drill-blobs \
+  BASE_URL=http://localhost:8080 sema-pkg stats     # user/package counts
+DATABASE_URL="sqlite:///tmp/drill.db?mode=rwc" sema-pkg doctor
+```
+
+The counts should match the live instance.
 
 **Caveat — one writer only.** SQLite + Litestream is single-node. Don't run more
 than one registry replica against the same database file; concurrent writers
