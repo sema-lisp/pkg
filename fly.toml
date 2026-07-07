@@ -1,6 +1,11 @@
 app = "sema-pkg"
 primary_region = "ams"
 
+# Give Litestream time to flush the final WAL segment to Tigris after the app
+# drains on stop (scale-to-zero / deploy). The final sync of a small metadata DB
+# is fast; 10s is ample headroom over the default 5s.
+kill_timeout = "10s"
+
 [build]
   dockerfile = "Dockerfile"
 
@@ -14,6 +19,10 @@ primary_region = "ams"
   # DNS + cert are set up (fly certs add pkg.sema-lang.com).
   BASE_URL = "https://pkg.sema-lang.com"
   RUST_LOG = "info"
+  # Run Litestream in-container (single machine), supervising the app and
+  # streaming the SQLite WAL to Tigris. Bucket/endpoint/creds come from the
+  # Tigris secrets `fly storage create` injected. See entrypoint.sh.
+  LITESTREAM_REPLICATE = "1"
 
 [http_service]
   internal_port = 8080

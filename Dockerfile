@@ -11,10 +11,18 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/release/sema-pkg /usr/local/bin/
+# Litestream, for optional in-container continuous SQLite backup to S3/R2/Tigris
+# (enabled with LITESTREAM_REPLICATE=1 — see entrypoint.sh). Pinned + copied from
+# the official image so the runtime image stays slim and reproducible.
+COPY --from=litestream/litestream:0.5.14 /usr/local/bin/litestream /usr/local/bin/litestream
+COPY litestream.yml /etc/litestream.yml
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY templates/ templates/
 COPY static/ static/
 EXPOSE 3000
 VOLUME ["/app/data"]
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS "http://localhost:${PORT:-3000}/readyz" || exit 1
-CMD ["sema-pkg"]
+# entrypoint.sh execs `sema-pkg` directly by default; with LITESTREAM_REPLICATE=1
+# it wraps the app in `litestream replicate -exec` for built-in backup.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

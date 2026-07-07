@@ -29,7 +29,7 @@ services:
       OAUTH_TOKEN_KEY: ${OAUTH_TOKEN_KEY:-}
 
   litestream:
-    image: litestream/litestream:latest
+    image: litestream/litestream:0.5.14
     restart: unless-stopped
     depends_on:
       - registry
@@ -37,6 +37,10 @@ services:
       - registry-data:/data
       - ./litestream.yml:/etc/litestream.yml:ro
     environment:
+      # litestream.yml reads bucket + endpoint from these (by default the same
+      # bucket as the blobs); credentials come from the LITESTREAM_* keys below.
+      LITESTREAM_BUCKET: ${BLOB_S3_BUCKET:-sema-packages}
+      LITESTREAM_ENDPOINT: ${BLOB_S3_ENDPOINT:?set BLOB_S3_ENDPOINT to your R2 endpoint}
       LITESTREAM_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
       LITESTREAM_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
     command: replicate

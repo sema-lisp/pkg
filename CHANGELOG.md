@@ -12,6 +12,15 @@ steps required.
 
 ### Added
 
+- **Built-in Litestream backup on Fly.io.** The container can now run Litestream
+  in-process (`LITESTREAM_REPLICATE=1`), continuously streaming the SQLite WAL to
+  Tigris and restoring automatically onto a fresh volume — so the machine holds
+  no irreplaceable state. `litestream.yml` is provider-agnostic (env-driven
+  bucket/endpoint), so the same config serves Tigris, R2, and S3; the
+  docker-compose sidecar path still works. Deployment docs rewritten around
+  Fly.io (recommended), Docker, and bare-binary + systemd, with an object-storage
+  matrix (Tigris/R2/S3/MinIO), a backup/restore section, and an admin CLI
+  reference.
 - **S3-compatible blob storage** (Cloudflare R2, MinIO, AWS S3) alongside the
   filesystem backend, selected by `BLOB_S3_BUCKET` — decouples tarball
   durability from the compute node for stateless / multi-instance deploys.

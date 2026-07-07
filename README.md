@@ -236,8 +236,9 @@ sema-pkg stats                              # user/package/download counts
 sema-pkg doctor                             # check DB, blob store, config
 ```
 
-For production hosting — single-node SQLite + Litestream + R2, managed Postgres,
-and object-storage blobs — see [DEPLOYMENT.md](DEPLOYMENT.md).
+For production hosting — Fly.io (recommended: SQLite + Tigris + built-in
+Litestream backup), Docker Compose, a bare binary + systemd, or managed Postgres
+for horizontal scale — see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## GitHub OAuth (Optional)
 

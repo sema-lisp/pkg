@@ -1,13 +1,26 @@
-# Litestream config for docker-compose.prod.yml — replicates the SQLite DB to R2.
-# Credentials come from LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY.
-# Restore before first boot with:
-#   litestream restore -config litestream.yml /data/registry.db
+# Litestream — continuous replication of the SQLite metadata DB to S3-compatible
+# storage (Tigris on Fly.io, Cloudflare R2 / AWS S3 / MinIO elsewhere).
+#
+# Provider-agnostic: bucket, endpoint, and credentials come from env so one
+# config serves every backend. Litestream expands ${...} at load.
+# Config format is Litestream v0.5.x (single `replica`, root-level `snapshot`).
+#
+#   Restore before first boot:  litestream restore /data/registry.db
+
+# Keep 7 days of point-in-time history; snapshot daily so a restore never
+# replays more than ~24h of WAL. (Global in v0.5.x, not per-replica.)
+snapshot:
+  interval: 24h
+  retention: 168h
+
 dbs:
   - path: /data/registry.db
-    replicas:
-      - type: s3
-        bucket: sema-packages
-        path: litestream/registry.db
-        endpoint: https://ACCOUNT_ID.r2.cloudflarestorage.com
-        region: auto
-        force-path-style: true
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: litestream/registry.db
+      endpoint: ${LITESTREAM_ENDPOINT}
+      region: auto
+      force-path-style: true
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
