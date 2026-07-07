@@ -113,17 +113,25 @@ fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
 }
 
 /// The most recently published packages, newest first, each paired with its
-/// latest version (highest-id row). `limit` bounds the result. Used by the
-/// homepage.
+/// latest version. `limit` bounds the result. Used by the homepage.
+///
+/// Walks `package_versions` newest-first via `idx_versions_published` and keeps
+/// the first (latest) row per package — the first occurrence in descending
+/// publish order *is* that package's latest version. Over-fetching a bounded
+/// window and de-duplicating in Rust avoids the per-package correlated `MAX`
+/// subquery, whose plan degrades badly on Postgres/MySQL (a full scan with the
+/// subquery run once per package).
 pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
+    // Enough recent rows to yield `limit` distinct packages even when a few
+    // publish many versions in the window; a bounded index scan stays cheap.
+    let scan = (limit * 30).max(300);
     let sql = format!(
         r#"SELECT p.name, p.description, pv.version AS latest_version, pv.published_at
-           FROM packages p
-           JOIN package_versions pv ON pv.package_id = p.id
-           WHERE pv.id = (SELECT MAX(pv2.id) FROM package_versions pv2 WHERE pv2.package_id = p.id)
-           ORDER BY pv.published_at DESC
+           FROM package_versions pv
+           JOIN packages p ON p.id = pv.package_id
+           ORDER BY pv.published_at DESC, pv.id DESC
            LIMIT {}"#,
-        limit
+        scan
     );
     let rows = db
         .query_all(crate::db::stmt(
@@ -133,7 +141,19 @@ pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
         ))
         .await
         .unwrap_or_default();
-    rows.iter().map(listing_row).collect()
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(limit as usize);
+    for r in &rows {
+        let row = listing_row(r);
+        if seen.insert(row.0.clone()) {
+            out.push(row);
+            if out.len() >= limit as usize {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Search packages by name/description for the server-rendered search page,
