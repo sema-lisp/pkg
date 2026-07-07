@@ -1,5 +1,11 @@
 use std::env;
 
+/// The first non-empty value among `keys` in the environment, if any.
+fn env_any(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|k| env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
 /// The compiled-in placeholder for `OAUTH_TOKEN_KEY`. Deploying with this value
 /// unchanged would encrypt every stored GitHub token under a publicly known
 /// key, so [`Config::check_production_secrets`] refuses to boot when it is used
@@ -69,11 +75,18 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://data/registry.db?mode=rwc".into()),
             blob_dir: env::var("BLOB_DIR").unwrap_or_else(|_| "data/blobs".into()),
-            blob_s3_bucket: env::var("BLOB_S3_BUCKET").ok(),
-            blob_s3_endpoint: env::var("BLOB_S3_ENDPOINT").ok(),
-            blob_s3_region: env::var("BLOB_S3_REGION").ok(),
-            blob_s3_access_key_id: env::var("BLOB_S3_ACCESS_KEY_ID").ok(),
-            blob_s3_secret_access_key: env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
+            // Fall back to the standard AWS SDK / Fly Tigris variable names, so
+            // `fly storage create` (which injects BUCKET_NAME, AWS_ENDPOINT_URL_S3,
+            // AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) works with no
+            // extra config.
+            blob_s3_bucket: env_any(&["BLOB_S3_BUCKET", "BUCKET_NAME"]),
+            blob_s3_endpoint: env_any(&["BLOB_S3_ENDPOINT", "AWS_ENDPOINT_URL_S3"]),
+            blob_s3_region: env_any(&["BLOB_S3_REGION", "AWS_REGION"]),
+            blob_s3_access_key_id: env_any(&["BLOB_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"]),
+            blob_s3_secret_access_key: env_any(&[
+                "BLOB_S3_SECRET_ACCESS_KEY",
+                "AWS_SECRET_ACCESS_KEY",
+            ]),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),
