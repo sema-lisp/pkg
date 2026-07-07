@@ -8,15 +8,23 @@
 //! hashes (every seeded user logs in with the dev password), a real printed API
 //! token, and real content-addressed blobs for the featured packages.
 //!
+//! Bulk data is generated and inserted in streaming batches (per-batch
+//! transactions), so memory stays bounded even at `--huge` scale (1M packages)
+//! — the seeder never materializes all rows at once.
+//!
 //! Usage:
 //!   cargo run --features seed --bin seed              # small, realistic dev set
 //!   cargo run --features seed --bin seed -- --large   # bulk stress data
+//!   cargo run --features seed --bin seed -- --huge    # 20k users, 1M packages
 //!   cargo run --features seed --bin seed -- --fresh   # wipe + recreate schema first
+//!
+//! Counts can be overridden per-run:
+//!   SEED_USERS=50000 SEED_PACKAGES=2000000 cargo run --features seed --bin seed -- --fresh
 //!
 //! Configuration is read from the environment exactly like the server
 //! (`DATABASE_URL`, `BLOB_DIR`, `BLOB_S3_*`). Point it at a **dev** database.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fake::faker::internet::en::{SafeEmail, Username};
 use fake::faker::lorem::en::{Sentence, Word};
@@ -24,7 +32,9 @@ use fake::Fake;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+};
 use time::{Duration, OffsetDateTime};
 
 use sema_pkg::auth::{generate_token, hash_password, hash_token};
@@ -38,9 +48,18 @@ use sema_pkg::entity::{
 // reused, so all seeded accounts log in with it.
 const DEV_PASSWORD: &str = "123123123";
 
-// Insert batch size. Small enough to stay under every engine's bound-parameter
-// limit (SQLite ~32k, Postgres 65k) at ~10 columns per row.
+// Insert batch size for a single insert_many. Stays under every engine's
+// bound-parameter limit (SQLite ~32k, Postgres 65k) at ~10 columns per row.
 const CHUNK: usize = 500;
+
+// Packages generated per streaming transaction. Larger = fewer commits/fsyncs
+// (faster) but more transient memory; ~4k keeps memory small and throughput high.
+const PKG_BATCH: usize = 4000;
+
+// Cap on packages retained in memory for the download/report pool. Bounds memory
+// at huge scale; downloads concentrate on this (popular) subset, which is
+// realistic anyway.
+const POOL_CAP: usize = 5000;
 
 /// A featured package: a stable, hand-written demo entry with a real README.
 struct Featured {
@@ -216,28 +235,63 @@ const REPORT_REASONS: &[&str] = &[
     "Offensive package name and description",
 ];
 
+struct Counts {
+    users: usize,
+    packages: usize,
+    downloads: usize,
+    reports: usize,
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let large = args.iter().any(|a| a == "--large" || a == "--scale=large");
     let fresh = args.iter().any(|a| a == "--fresh");
+    let has = |name: &str| args.iter().any(|a| a == name);
 
-    let (bulk_users, bulk_packages, num_downloads, num_reports) = if large {
-        (1000usize, 500usize, 20_000usize, 200usize)
+    let (label, mut counts) = if has("--huge") {
+        (
+            "huge (1M packages)",
+            Counts {
+                users: 20_000,
+                packages: 1_000_000,
+                downloads: 200_000,
+                reports: 500,
+            },
+        )
+    } else if has("--large") || has("--scale=large") {
+        (
+            "large (stress)",
+            Counts {
+                users: 1_000,
+                packages: 500,
+                downloads: 20_000,
+                reports: 200,
+            },
+        )
     } else {
-        (40, 60, 4_000, 30)
+        (
+            "small (dev)",
+            Counts {
+                users: 40,
+                packages: 60,
+                downloads: 4_000,
+                reports: 30,
+            },
+        )
     };
+    // Per-run overrides for probing where things break.
+    env_override("SEED_USERS", &mut counts.users);
+    env_override("SEED_PACKAGES", &mut counts.packages);
+    env_override("SEED_DOWNLOADS", &mut counts.downloads);
+    env_override("SEED_REPORTS", &mut counts.reports);
 
     let config = Config::from_env();
     println!("=== Sema Registry Seeder ===");
     println!("Database: {}", redact(&config.database_url));
+    println!("Scale:    {label}");
     println!(
-        "Scale:    {}",
-        if large {
-            "large (stress)"
-        } else {
-            "small (dev)"
-        }
+        "Target:   {} users, {} packages, {} downloads, {} reports",
+        counts.users, counts.packages, counts.downloads, counts.reports
     );
     println!();
 
@@ -257,7 +311,6 @@ async fn main() {
     let dev_hash = hash_password(DEV_PASSWORD); // hash once, reuse everywhere
 
     // ── Users ────────────────────────────────────────────────────────────
-    // Featured accounts drive the stable demo narrative.
     let featured_users: &[(&str, &str, bool, bool)] = &[
         // (username, email, is_admin, banned)
         ("helge", "helge@sema-lang.com", true, false),
@@ -288,15 +341,31 @@ async fn main() {
         });
     }
 
-    // Bulk users: realistic fake identities. ~15% are GitHub-only (no password).
     let mut github_id_seq = 100_000i64;
-    while users.len() < featured_users.len() + bulk_users {
-        let username: String = Username().fake_with_rng(&mut rng);
-        let username = sanitize_username(&username);
-        if username.len() < 2 || !seen_names.insert(username.clone()) {
+    let mut user_seq: u64 = 0;
+    while users.len() < counts.users.max(featured_users.len()) {
+        // fake's Username/email namespace is finite once lowercased; append a
+        // strictly-increasing suffix on collision so we can reach any count.
+        let base: String = Username().fake_with_rng(&mut rng);
+        let base = sanitize_username(&base);
+        if base.len() < 2 {
             continue;
         }
-        let email: String = SafeEmail().fake_with_rng(&mut rng);
+        let username = if seen_names.contains(&base) {
+            user_seq += 1;
+            format!("{base}{user_seq}")
+        } else {
+            base
+        };
+        if !seen_names.insert(username.clone()) {
+            continue;
+        }
+        let raw_email: String = SafeEmail().fake_with_rng(&mut rng);
+        let email = if seen_emails.contains(&raw_email) {
+            format!("{username}@seed.example")
+        } else {
+            raw_email
+        };
         if !seen_emails.insert(email.clone()) {
             continue;
         }
@@ -321,27 +390,39 @@ async fn main() {
         });
     }
     let user_count = users.len();
-    insert_chunked::<user::Entity, _>(&db, users).await;
+    insert_chunked::<user::Entity, _, _>(&db, users).await;
+    use std::io::Write as _;
 
-    // Map username -> id (portable; avoids relying on returned ids).
-    let user_ids: Vec<(i64, String, bool)> = user::Entity::find()
-        .all(&db)
-        .await
-        .expect("load users")
-        .into_iter()
-        .map(|u| (u.id, u.username, u.password_hash.is_some()))
-        .collect();
-    let helge_id = user_ids
+    let loaded: Vec<user::Model> = user::Entity::find().all(&db).await.expect("load users");
+    let helge_id = loaded
         .iter()
-        .find(|(_, n, _)| n == "helge")
-        .map(|(id, ..)| *id)
+        .find(|u| u.username == "helge")
+        .map(|u| u.id)
         .unwrap();
-    let all_ids: Vec<i64> = user_ids.iter().map(|(id, ..)| *id).collect();
-    // Users who can own/publish (have a login or are GitHub-linked — anyone, really).
-    let owner_pool: Vec<i64> = all_ids.clone();
-    println!("Users:     {user_count}");
+    let all_ids: Vec<i64> = loaded.iter().map(|u| u.id).collect();
+    let usernames: Vec<String> = loaded.iter().map(|u| u.username.clone()).collect();
+    let uname_by_id: HashMap<i64, String> =
+        loaded.iter().map(|u| (u.id, u.username.clone())).collect();
+    println!("Users:     {user_count}  [{:.1}s]", elapsed(t0));
+    std::io::stdout().flush().ok();
 
-    // ── API token for helge (real, printed so you can curl the API) ──────
+    // Register audit for every user.
+    let register_audit: Vec<audit_log::ActiveModel> = usernames
+        .iter()
+        .map(|n| {
+            audit_entry(
+                n,
+                "register",
+                "user",
+                n,
+                None,
+                ts_days_ago(&mut rng, 200, 1),
+            )
+        })
+        .collect();
+    insert_chunked::<audit_log::Entity, _, _>(&db, register_audit).await;
+
+    // API token for helge (real, printed so you can curl the API).
     let raw_token = generate_token();
     api_token::ActiveModel {
         user_id: Set(helge_id),
@@ -355,25 +436,24 @@ async fn main() {
     .await
     .expect("insert token");
 
-    // ── Packages ─────────────────────────────────────────────────────────
-    let mut packages: Vec<package::ActiveModel> = Vec::new();
-    let mut pkg_specs: Vec<(String, i64, bool)> = Vec::new(); // (name, owner_id, is_featured)
-    let mut seen_pkg: HashSet<String> = HashSet::new();
+    // ── Featured packages (real blobs, READMEs) ──────────────────────────
+    // Retained pool: (package_name, [(version, yanked)]) used later to generate
+    // realistic downloads/reports without holding all 1M packages in memory.
+    let mut pool: Vec<(String, Vec<(String, bool)>)> = Vec::new();
+    let mut publish_audit: Vec<audit_log::ActiveModel> = Vec::new();
 
     for f in FEATURED {
-        seen_pkg.insert(f.name.to_string());
         let owner_id = if f.name == "sema-csv" {
-            user_ids
+            loaded
                 .iter()
-                .find(|(_, n, _)| n == "kari")
-                .map(|(id, ..)| *id)
+                .find(|u| u.username == "kari")
+                .map(|u| u.id)
                 .unwrap()
         } else {
             helge_id
         };
         let readme = featured_readme(f);
-        let created = ts_days_ago(&mut rng, 180, 120);
-        packages.push(package::ActiveModel {
+        let pkg = package::ActiveModel {
             name: Set(f.name.into()),
             description: Set(f.description.into()),
             repository_url: Set(f
@@ -391,119 +471,29 @@ async fn main() {
                 &readme,
                 &comrak::Options::default(),
             ))),
-            created_at: Set(created),
+            created_at: Set(ts_days_ago(&mut rng, 180, 120)),
             ..Default::default()
-        });
-        pkg_specs.push((f.name.to_string(), owner_id, true));
-    }
-
-    // Bulk packages with realistic names + descriptions.
-    let mut spam_pkgs: Vec<String> = Vec::new();
-    while pkg_specs.len() < FEATURED.len() + bulk_packages {
-        let name = gen_pkg_name(&mut rng);
-        if !seen_pkg.insert(name.clone()) {
-            continue;
-        }
-        let owner_id = *owner_pool.choose(&mut rng).unwrap();
-        let github = rng.gen_bool(0.2);
-        let topic = name
-            .trim_start_matches("sema-")
-            .split('-')
-            .next_back()
-            .unwrap_or("core");
-        let desc = format!("{} library for Sema — {}", capitalize(topic), {
-            let s: String = Sentence(4..12).fake_with_rng(&mut rng);
-            lower_first(&s)
-        });
-        packages.push(package::ActiveModel {
-            name: Set(name.clone()),
-            description: Set(desc),
-            repository_url: Set(github.then(|| format!("https://github.com/sema-lang/{name}"))),
-            source: Set(if github {
-                "github".into()
-            } else {
-                "upload".into()
-            }),
-            github_repo: Set(github.then(|| format!("sema-lang/{name}"))),
-            webhook_secret: Set(None),
-            readme_raw: Set(None),
-            readme_html: Set(None),
-            created_at: Set(ts_days_ago(&mut rng, 170, 20)),
-            ..Default::default()
-        });
-        if rng.gen_bool(0.03) {
-            spam_pkgs.push(name.clone());
-        }
-        pkg_specs.push((name, owner_id, false));
-    }
-    let pkg_count = pkg_specs.len();
-    insert_chunked::<package::Entity, _>(&db, packages).await;
-
-    let pkg_id: std::collections::HashMap<String, i64> = package::Entity::find()
-        .all(&db)
-        .await
-        .expect("load packages")
-        .into_iter()
-        .map(|p| (p.name, p.id))
-        .collect();
-    println!("Packages:  {pkg_count}");
-
-    // ── Owners ───────────────────────────────────────────────────────────
-    let mut owners: HashSet<(i64, i64)> = HashSet::new();
-    for (name, owner_id, _) in &pkg_specs {
-        let pid = pkg_id[name];
-        owners.insert((pid, *owner_id));
-        // ~25% of packages have a co-owner.
-        if rng.gen_bool(0.25) {
-            let co = *owner_pool.choose(&mut rng).unwrap();
-            if co != *owner_id {
-                owners.insert((pid, co));
-            }
-        }
-    }
-    let owner_models: Vec<owner::ActiveModel> = owners
-        .into_iter()
-        .map(|(pid, uid)| owner::ActiveModel {
-            package_id: Set(pid),
-            user_id: Set(uid),
-        })
-        .collect();
-    insert_chunked::<owner::Entity, _>(&db, owner_models).await;
-
-    // ── Versions (real blobs for featured, synthetic keys for bulk) ──────
-    let mut versions: Vec<package_version::ActiveModel> = Vec::new();
-    let mut version_index: Vec<(String, String, bool, i64)> = Vec::new(); // name, ver, yanked, owner
-    for (name, owner_id, featured) in &pkg_specs {
-        let pid = pkg_id[name];
-        let n = if *featured {
-            rng.gen_range(2..=6)
-        } else {
-            rng.gen_range(1..=8)
         };
-        let mut vers: Vec<(u32, u32, u32)> = Vec::new();
-        while vers.len() < n {
-            let v = (
-                rng.gen_range(0..=3),
-                rng.gen_range(0..=15),
-                rng.gen_range(0..=20),
-            );
-            if !vers.contains(&v) {
-                vers.push(v);
-            }
+        let pid = pkg.insert(&db).await.expect("insert featured").id;
+        owner::ActiveModel {
+            package_id: Set(pid),
+            user_id: Set(owner_id),
         }
+        .insert(&db)
+        .await
+        .expect("insert featured owner");
+
+        let n = rng.gen_range(2..=6);
+        let mut vers = unique_versions(&mut rng, n);
         vers.sort_unstable();
+        let mut retained = Vec::new();
         for (i, (maj, min, pat)) in vers.iter().enumerate() {
             let ver = format!("{maj}.{min}.{pat}");
-            let (blob_key, checksum, size) = if *featured {
-                let bytes = format!("sema package {name} v{ver}\n").into_bytes();
-                blobs.store(&bytes).await.expect("store blob")
-            } else {
-                synthetic_key(name, &ver)
-            };
+            let bytes = format!("sema package {} v{ver}\n", f.name).into_bytes();
+            let (blob_key, checksum, size) = blobs.store(&bytes).await.expect("store blob");
             let yanked = rng.gen_bool(0.08);
-            // Later versions published later.
-            let span = 150 - (i as i64 * 150 / n.max(1) as i64);
-            versions.push(package_version::ActiveModel {
+            let span = 150 - (i as i64 * 150 / n as i64);
+            package_version::ActiveModel {
                 package_id: Set(pid),
                 version: Set(ver.clone()),
                 checksum_sha256: Set(checksum),
@@ -519,40 +509,191 @@ async fn main() {
                 tarball_url: Set(None),
                 published_at: Set(ts_days_ago(&mut rng, span.max(1), (span - 20).max(0))),
                 ..Default::default()
+            }
+            .insert(&db)
+            .await
+            .expect("insert featured version");
+            publish_audit.push(audit_entry(
+                &uname_by_id[&owner_id],
+                "publish",
+                "package_version",
+                &format!("{}@{ver}", f.name),
+                None,
+                ts_days_ago(&mut rng, 150, 1),
+            ));
+            retained.push((ver, yanked));
+        }
+        pool.push((f.name.to_string(), retained));
+    }
+
+    // ── Bulk packages (streamed in per-batch transactions) ───────────────
+    let bulk_target = counts.packages.saturating_sub(FEATURED.len());
+    let mut seen_pkg: HashSet<String> = FEATURED.iter().map(|f| f.name.to_string()).collect();
+    let mut spam_pkgs: Vec<String> = Vec::new();
+    let mut total_versions: u64 = 0;
+    let mut made = 0usize;
+    let mut last_report = 0usize;
+    // The realistic name space is finite (~topics × qualifiers); past it we
+    // append a strictly-increasing suffix so uniqueness holds into the millions.
+    let mut name_seq: u64 = 0;
+
+    while made < bulk_target {
+        let batch_n = PKG_BATCH.min(bulk_target - made);
+        let txn = db.begin().await.expect("begin batch txn");
+
+        // 1. Package rows for this batch.
+        let mut names: Vec<String> = Vec::with_capacity(batch_n);
+        let mut pkgs: Vec<package::ActiveModel> = Vec::with_capacity(batch_n);
+        let mut owner_of: HashMap<String, i64> = HashMap::with_capacity(batch_n);
+        while names.len() < batch_n {
+            let base = gen_pkg_name(&mut rng);
+            let name = if seen_pkg.contains(&base) {
+                name_seq += 1;
+                format!("{base}-{name_seq}")
+            } else {
+                base
+            };
+            if !seen_pkg.insert(name.clone()) {
+                continue;
+            }
+            let owner_id = *all_ids.choose(&mut rng).unwrap();
+            let github = rng.gen_bool(0.2);
+            let topic = name
+                .trim_start_matches("sema-")
+                .split('-')
+                .next_back()
+                .unwrap_or("core");
+            let sentence: String = Sentence(4..12).fake_with_rng(&mut rng);
+            let desc = format!(
+                "{} library for Sema — {}",
+                capitalize(topic),
+                lower_first(&sentence)
+            );
+            pkgs.push(package::ActiveModel {
+                name: Set(name.clone()),
+                description: Set(desc),
+                repository_url: Set(github.then(|| format!("https://github.com/sema-lang/{name}"))),
+                source: Set(if github {
+                    "github".into()
+                } else {
+                    "upload".into()
+                }),
+                github_repo: Set(github.then(|| format!("sema-lang/{name}"))),
+                webhook_secret: Set(None),
+                readme_raw: Set(None),
+                readme_html: Set(None),
+                created_at: Set(ts_days_ago(&mut rng, 170, 20)),
+                ..Default::default()
             });
-            version_index.push((name.clone(), ver, yanked, *owner_id));
+            if rng.gen_bool(0.02) {
+                spam_pkgs.push(name.clone());
+            }
+            owner_of.insert(name.clone(), owner_id);
+            names.push(name);
+        }
+        insert_chunked::<package::Entity, _, _>(&txn, pkgs).await;
+
+        // 2. Fetch ids for this batch (reads its own writes inside the txn).
+        let id_of: HashMap<String, i64> = package::Entity::find()
+            .filter(package::Column::Name.is_in(names.iter().cloned()))
+            .all(&txn)
+            .await
+            .expect("load batch ids")
+            .into_iter()
+            .map(|p| (p.name, p.id))
+            .collect();
+
+        // 3. Versions + owners for the batch.
+        let mut versions: Vec<package_version::ActiveModel> = Vec::new();
+        let mut owners: Vec<owner::ActiveModel> = Vec::new();
+        for name in &names {
+            let pid = id_of[name];
+            let owner_id = owner_of[name];
+            owners.push(owner::ActiveModel {
+                package_id: Set(pid),
+                user_id: Set(owner_id),
+            });
+            if rng.gen_bool(0.25) {
+                let co = *all_ids.choose(&mut rng).unwrap();
+                if co != owner_id {
+                    owners.push(owner::ActiveModel {
+                        package_id: Set(pid),
+                        user_id: Set(co),
+                    });
+                }
+            }
+            let n = rng.gen_range(1..=8);
+            let mut vers = unique_versions(&mut rng, n);
+            vers.sort_unstable();
+            let mut retained = Vec::new();
+            for (i, (maj, min, pat)) in vers.iter().enumerate() {
+                let ver = format!("{maj}.{min}.{pat}");
+                let (blob_key, checksum, _) = synthetic_key(name, &ver);
+                let yanked = rng.gen_bool(0.08);
+                let span = 150 - (i as i64 * 150 / n as i64);
+                versions.push(package_version::ActiveModel {
+                    package_id: Set(pid),
+                    version: Set(ver.clone()),
+                    checksum_sha256: Set(checksum),
+                    blob_key: Set(blob_key),
+                    size_bytes: Set(rng.gen_range(1_000..500_000)),
+                    yanked: Set(i32::from(yanked)),
+                    sema_version_req: Set(Some(format!(
+                        ">={}",
+                        ["0.6", "0.7", "0.8", "0.9", "1.0"]
+                            .choose(&mut rng)
+                            .unwrap()
+                    ))),
+                    tarball_url: Set(None),
+                    published_at: Set(ts_days_ago(&mut rng, span.max(1), (span - 20).max(0))),
+                    ..Default::default()
+                });
+                if pool.len() < POOL_CAP {
+                    retained.push((ver, yanked));
+                }
+            }
+            total_versions += vers.len() as u64;
+            if pool.len() < POOL_CAP {
+                pool.push((name.clone(), retained));
+            }
+        }
+        insert_chunked::<package_version::Entity, _, _>(&txn, versions).await;
+        insert_chunked::<owner::Entity, _, _>(&txn, owners).await;
+
+        txn.commit().await.expect("commit batch");
+        made += batch_n;
+
+        if made - last_report >= 50_000 || made == bulk_target {
+            last_report = made;
+            let secs = elapsed(t0);
+            let rate = made as f64 / secs.max(0.001);
+            println!("  … {made}/{bulk_target} packages, {total_versions} versions  [{secs:.1}s, {rate:.0} pkg/s]");
+            std::io::stdout().flush().ok();
         }
     }
-    let version_count = versions.len();
-    insert_chunked::<package_version::Entity, _>(&db, versions).await;
-    println!("Versions:  {version_count}");
+    println!(
+        "Packages:  {}  ({} versions)  [{:.1}s]",
+        made + FEATURED.len(),
+        total_versions,
+        elapsed(t0)
+    );
 
-    // ── Downloads (Zipf-ish: a few packages dominate) ────────────────────
-    let pkg_names: Vec<String> = pkg_specs.iter().map(|(n, ..)| n.clone()).collect();
-    let mut ver_by_pkg: std::collections::HashMap<&str, Vec<&str>> =
-        std::collections::HashMap::new();
-    for (name, ver, ..) in &version_index {
-        ver_by_pkg
-            .entry(name.as_str())
-            .or_default()
-            .push(ver.as_str());
-    }
-    let popular_n = (pkg_names.len() / 10).max(1);
-    let mut dl_counts: std::collections::HashMap<(String, String, String), i32> =
-        std::collections::HashMap::new();
-    for _ in 0..num_downloads {
-        let name = if rng.gen_bool(0.7) {
-            &pkg_names[rng.gen_range(0..popular_n)]
+    // ── Downloads (against the retained popular pool) ────────────────────
+    let popular_n = (pool.len() / 10).max(1);
+    let mut dl_counts: HashMap<(String, String, String), i32> = HashMap::new();
+    for _ in 0..counts.downloads {
+        let (name, vers) = if rng.gen_bool(0.7) {
+            &pool[rng.gen_range(0..popular_n)]
         } else {
-            &pkg_names[rng.gen_range(0..pkg_names.len())]
+            &pool[rng.gen_range(0..pool.len())]
         };
-        let Some(vers) = ver_by_pkg.get(name.as_str()) else {
+        if vers.is_empty() {
             continue;
-        };
-        let ver = vers[rng.gen_range(0..vers.len())];
+        }
+        let (ver, _) = &vers[rng.gen_range(0..vers.len())];
         let date = date_days_ago(&mut rng, 60, 0);
         *dl_counts
-            .entry((name.clone(), ver.to_string(), date))
+            .entry((name.clone(), ver.clone(), date))
             .or_insert(0) += 1;
     }
     let downloads: Vec<download_daily::ActiveModel> = dl_counts
@@ -565,23 +706,22 @@ async fn main() {
         })
         .collect();
     let dl_rows = downloads.len();
-    insert_chunked::<download_daily::Entity, _>(&db, downloads).await;
-    println!("Downloads: {dl_rows} daily rows ({num_downloads} events)");
+    insert_chunked::<download_daily::Entity, _, _>(&db, downloads).await;
+    println!(
+        "Downloads: {dl_rows} daily rows ({} events)  [{:.1}s]",
+        counts.downloads,
+        elapsed(t0)
+    );
 
-    // ── Reports ──────────────────────────────────────────────────────────
-    let usernames: Vec<String> = user_ids.iter().map(|(_, n, _)| n.clone()).collect();
+    // ── Reports (against pooled packages + users) ────────────────────────
     let mut reports: Vec<report::ActiveModel> = Vec::new();
-    // Ensure spammy bulk packages + spambot get reported for a believable queue.
     for target in spam_pkgs.iter().take(6) {
         reports.push(make_report(&mut rng, &all_ids, "package", target, "open"));
     }
     reports.push(make_report(&mut rng, &all_ids, "user", "spambot", "open"));
-    while reports.len() < num_reports {
+    while reports.len() < counts.reports {
         let (ttype, tname) = if rng.gen_bool(0.8) {
-            (
-                "package",
-                pkg_names[rng.gen_range(0..pkg_names.len())].clone(),
-            )
+            ("package", pool[rng.gen_range(0..pool.len())].0.clone())
         } else {
             ("user", usernames[rng.gen_range(0..usernames.len())].clone())
         };
@@ -593,54 +733,34 @@ async fn main() {
         reports.push(make_report(&mut rng, &all_ids, ttype, &tname, status));
     }
     let report_count = reports.len();
-    insert_chunked::<report::Entity, _>(&db, reports).await;
-    println!("Reports:   {report_count}");
+    insert_chunked::<report::Entity, _, _>(&db, reports).await;
+    println!("Reports:   {report_count}  [{:.1}s]", elapsed(t0));
 
-    // ── Audit log ────────────────────────────────────────────────────────
-    let uname_by_id: std::collections::HashMap<i64, String> =
-        user_ids.iter().map(|(id, n, _)| (*id, n.clone())).collect();
-    let mut audit: Vec<audit_log::ActiveModel> = Vec::new();
-    for (_, name, _) in &user_ids {
-        audit.push(audit_entry(
-            name,
-            "register",
-            "user",
-            name,
-            None,
-            ts_days_ago(&mut rng, 200, 1),
-        ));
-    }
-    for (name, ver, yanked, owner_id) in &version_index {
-        let actor = uname_by_id
-            .get(owner_id)
-            .cloned()
-            .unwrap_or_else(|| "unknown".into());
-        audit.push(audit_entry(
-            &actor,
-            "publish",
-            "package_version",
-            &format!("{name}@{ver}"),
-            None,
-            ts_days_ago(&mut rng, 150, 1),
-        ));
-        if *yanked {
-            audit.push(audit_entry(
-                &actor,
-                "yank",
-                "package_version",
-                &format!("{name}@{ver}"),
-                None,
-                ts_days_ago(&mut rng, 60, 1),
-            ));
+    // ── Audit log: publish events for the pool + yanks ───────────────────
+    for (name, vers) in &pool {
+        for (ver, yanked) in vers {
+            if *yanked {
+                publish_audit.push(audit_entry(
+                    "moderation",
+                    "yank",
+                    "package_version",
+                    &format!("{name}@{ver}"),
+                    None,
+                    ts_days_ago(&mut rng, 60, 1),
+                ));
+            }
         }
     }
-    let audit_count = audit.len();
-    insert_chunked::<audit_log::Entity, _>(&db, audit).await;
-    println!("Audit log: {audit_count}");
+    let audit_count = publish_audit.len();
+    insert_chunked::<audit_log::Entity, _, _>(&db, publish_audit).await;
+    println!(
+        "Audit log: {} register + {audit_count} publish/yank  [{:.1}s]",
+        user_count,
+        elapsed(t0)
+    );
 
-    let secs = (OffsetDateTime::now_utc() - t0).as_seconds_f64();
     println!();
-    println!("=== Seed complete in {secs:.1}s ===");
+    println!("=== Seed complete in {:.1}s ===", elapsed(t0));
     println!();
     println!("Admin login:  helge / {DEV_PASSWORD}");
     println!("API token:    {raw_token}");
@@ -652,25 +772,51 @@ async fn main() {
 
 // ── Insert helper ─────────────────────────────────────────────────────────
 
-/// Insert active models in chunks within one transaction per chunk. Skips empty
-/// input (SeaORM's `insert_many` errors on an empty set).
-async fn insert_chunked<E, A>(db: &sema_pkg::db::Db, models: Vec<A>)
+/// Insert active models in chunks. Works against a connection or a transaction.
+/// Skips empty input (SeaORM's `insert_many` errors on an empty set).
+async fn insert_chunked<E, A, C>(conn: &C, models: Vec<A>)
 where
     E: EntityTrait,
-    A: sea_orm::ActiveModelTrait<Entity = E> + Send,
+    A: ActiveModelTrait<Entity = E> + Send,
+    C: ConnectionTrait,
 {
     for chunk in models.chunks(CHUNK) {
         if chunk.is_empty() {
             continue;
         }
         E::insert_many(chunk.to_vec())
-            .exec(db)
+            .exec(conn)
             .await
             .expect("insert_many failed");
     }
 }
 
 // ── Data helpers ──────────────────────────────────────────────────────────
+
+fn env_override(key: &str, slot: &mut usize) {
+    if let Ok(v) = std::env::var(key) {
+        if let Ok(n) = v.parse::<usize>() {
+            *slot = n;
+        }
+    }
+}
+
+fn unique_versions(rng: &mut StdRng, n: usize) -> Vec<(u32, u32, u32)> {
+    let mut vers: Vec<(u32, u32, u32)> = Vec::with_capacity(n);
+    let mut guard = 0;
+    while vers.len() < n && guard < n * 10 {
+        let v = (
+            rng.gen_range(0..=3),
+            rng.gen_range(0..=15),
+            rng.gen_range(0..=20),
+        );
+        if !vers.contains(&v) {
+            vers.push(v);
+        }
+        guard += 1;
+    }
+    vers
+}
 
 fn make_report(
     rng: &mut StdRng,
@@ -782,6 +928,10 @@ fn redact(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+fn elapsed(t0: OffsetDateTime) -> f64 {
+    (OffsetDateTime::now_utc() - t0).as_seconds_f64()
 }
 
 fn ts_days_ago(rng: &mut StdRng, max_days: i64, min_days: i64) -> String {
