@@ -71,6 +71,12 @@ pub struct DepInfo {
     pub version_req: String,
 }
 
+pub struct OwnerInfo {
+    pub name: String,
+    /// True for the official house account(s) — renders a verified badge.
+    pub official: bool,
+}
+
 pub struct TokenInfo {
     pub id: i64,
     pub name: String,
@@ -111,8 +117,7 @@ pub struct PackageTemplate {
     pub repository_url: Option<String>,
     pub source: String,
     pub github_repo: Option<String>,
-    pub owners: Vec<String>,
-    pub is_official: bool,
+    pub owners: Vec<OwnerInfo>,
     pub versions: Vec<VersionInfo>,
     pub deps: Vec<DepInfo>,
     pub total_downloads: i64,
@@ -304,10 +309,15 @@ pub async fn package_detail(
         vec![]
     };
 
-    let owners = dal::owners::list_usernames(&state.db, pkg_id)
+    let owners: Vec<OwnerInfo> = dal::owners::list_usernames(&state.db, pkg_id)
         .await
-        .unwrap_or_default();
-    let is_official = owners.iter().any(|o| crate::auth::is_official(o));
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| OwnerInfo {
+            official: crate::auth::is_official(&name),
+            name,
+        })
+        .collect();
 
     let total_downloads = dal::downloads::total(&state.db, &name).await.unwrap_or(0);
 
@@ -320,7 +330,6 @@ pub async fn package_detail(
         source,
         github_repo,
         owners,
-        is_official,
         versions,
         deps,
         total_downloads,
