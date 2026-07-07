@@ -5,7 +5,11 @@
 //! - PostgreSQL: `pg_trgm` GIN indexes so the existing `ILIKE '%q%'` is
 //!   index-accelerated. Best-effort — if the extension cannot be created the
 //!   migration still succeeds and search falls back to a sequential scan.
-//! - MySQL: a `FULLTEXT` index, best-effort.
+//! - MySQL: a `FULLTEXT` index on (name, description); search uses
+//!   `MATCH … AGAINST` in boolean mode.
+//!
+//! Across all engines the result is ordered so an exact name match ranks first,
+//! then a name prefix, then everything else (see `dal::packages`).
 
 use sea_orm::{ConnectionTrait, DbBackend};
 use sea_orm_migration::prelude::*;

@@ -12,16 +12,75 @@ use sea_orm::{
 use crate::dal::time;
 use crate::entity::{owner, package, package_version, report};
 
-/// The SQLite FTS5 `MATCH` expression for `q`, or `None` when the FTS path does
-/// not apply (non-SQLite backend, or an empty query). The query is quoted and
-/// prefixed so it matches package-name tokens; embedded quotes are doubled to
-/// keep the FTS5 syntax safe.
-fn fts_match(backend: DatabaseBackend, q: &str) -> Option<String> {
-    if backend == DatabaseBackend::Sqlite && !q.trim().is_empty() {
-        Some(format!("\"{}\"*", q.replace('"', "\"\"")))
-    } else {
-        None
+/// A search predicate over the `packages` table (aliased `p`): the join to add
+/// to the FROM clause, the WHERE fragment, and its bound values, chosen per
+/// backend. An empty query matches all rows.
+///
+/// - SQLite: FTS5 `MATCH` (quoted prefix; embedded quotes doubled for safety).
+/// - MySQL: `MATCH … AGAINST` boolean mode, falling back to `LIKE` when the
+///   query has no indexable tokens.
+/// - Postgres / other: `LIKE '%q%'` (Postgres accelerates it via `pg_trgm`).
+fn search_predicate(
+    backend: DatabaseBackend,
+    q: &str,
+) -> (&'static str, String, Vec<sea_orm::Value>) {
+    if q.trim().is_empty() {
+        return ("", "1=1".into(), vec![]);
     }
+    let like = || {
+        let pat = format!("%{q}%");
+        (
+            "",
+            "(p.name LIKE ? OR p.description LIKE ?)".to_string(),
+            vec![pat.clone().into(), pat.into()],
+        )
+    };
+    match backend {
+        DatabaseBackend::Sqlite => {
+            let m = format!("\"{}\"*", q.replace('"', "\"\""));
+            (
+                "JOIN packages_fts f ON f.rowid = p.id",
+                "packages_fts MATCH ?".into(),
+                vec![m.into()],
+            )
+        }
+        DatabaseBackend::MySql => {
+            let expr = mysql_boolean(q);
+            if expr.is_empty() {
+                like()
+            } else {
+                (
+                    "",
+                    "MATCH(p.name, p.description) AGAINST (? IN BOOLEAN MODE)".into(),
+                    vec![expr.into()],
+                )
+            }
+        }
+        _ => like(),
+    }
+}
+
+/// A boolean-mode FULLTEXT expression: each alphanumeric token required as a
+/// prefix (`+token*`). Empty when the query has no indexable tokens.
+fn mysql_boolean(q: &str) -> String {
+    q.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("+{t}*"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Relevance `ORDER BY`: exact name match first, then a name prefix, then the
+/// rest, breaking ties alphabetically. Returns the fragment and its binds (which
+/// follow the WHERE binds). An empty query just orders by name.
+fn relevance_order(q: &str) -> (String, Vec<sea_orm::Value>) {
+    if q.trim().is_empty() {
+        return ("p.name".into(), vec![]);
+    }
+    (
+        "CASE WHEN p.name = ? THEN 0 WHEN p.name LIKE ? THEN 1 ELSE 2 END, p.name".into(),
+        vec![q.into(), format!("{q}%").into()],
+    )
 }
 
 /// Look up a package by its unique name.
@@ -89,34 +148,22 @@ pub async fn search_page<C: ConnectionTrait>(
     offset: i64,
 ) -> Vec<ListingRow> {
     let backend = db.get_database_backend();
-    let stmt = if let Some(m) = fts_match(backend, q) {
-        let sql = format!(
-            r#"SELECT p.name, p.description,
-               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-               FROM packages p
-               JOIN packages_fts f ON f.rowid = p.id
-               WHERE packages_fts MATCH ?
-               ORDER BY p.name
-               LIMIT {} OFFSET {}"#,
-            limit, offset
-        );
-        crate::db::stmt(backend, &sql, [m.into()])
-    } else {
-        let pattern = format!("%{q}%");
-        let sql = format!(
-            r#"SELECT p.name, p.description,
-               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-               FROM packages p
-               WHERE p.name LIKE ? OR p.description LIKE ?
-               ORDER BY p.name
-               LIMIT {} OFFSET {}"#,
-            limit, offset
-        );
-        crate::db::stmt(backend, &sql, [pattern.clone().into(), pattern.into()])
-    };
-    let rows = db.query_all(stmt).await.unwrap_or_default();
+    let (join, where_sql, mut binds) = search_predicate(backend, q);
+    let (order, order_binds) = relevance_order(q);
+    binds.extend(order_binds);
+    let sql = format!(
+        r#"SELECT p.name, p.description,
+           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+           FROM packages p {join}
+           WHERE {where_sql}
+           ORDER BY {order}
+           LIMIT {limit} OFFSET {offset}"#
+    );
+    let rows = db
+        .query_all(crate::db::stmt(backend, &sql, binds))
+        .await
+        .unwrap_or_default();
     rows.iter().map(listing_row).collect()
 }
 
@@ -323,28 +370,16 @@ pub async fn search<C: ConnectionTrait>(
     offset: i64,
 ) -> Result<Vec<SearchHit>, DbErr> {
     let backend = db.get_database_backend();
-    let stmt = if let Some(m) = fts_match(backend, q) {
-        let sql = format!(
-            r#"SELECT p.name, p.description, p.created_at FROM packages p
-               JOIN packages_fts f ON f.rowid = p.id
-               WHERE packages_fts MATCH ?
-               ORDER BY p.name
-               LIMIT {} OFFSET {}"#,
-            limit, offset
-        );
-        crate::db::stmt(backend, &sql, [m.into()])
-    } else {
-        let pattern = format!("%{q}%");
-        let sql = format!(
-            r#"SELECT name, description, created_at FROM packages
-               WHERE name LIKE ? OR description LIKE ?
-               ORDER BY name
-               LIMIT {} OFFSET {}"#,
-            limit, offset
-        );
-        crate::db::stmt(backend, &sql, [pattern.clone().into(), pattern.into()])
-    };
-    let rows = db.query_all(stmt).await?;
+    let (join, where_sql, mut binds) = search_predicate(backend, q);
+    let (order, order_binds) = relevance_order(q);
+    binds.extend(order_binds);
+    let sql = format!(
+        r#"SELECT p.name, p.description, p.created_at FROM packages p {join}
+           WHERE {where_sql}
+           ORDER BY {order}
+           LIMIT {limit} OFFSET {offset}"#
+    );
+    let rows = db.query_all(crate::db::stmt(backend, &sql, binds)).await?;
 
     Ok(rows
         .iter()
@@ -361,20 +396,8 @@ pub async fn search<C: ConnectionTrait>(
 #[tracing::instrument(skip_all, level = "debug")]
 pub async fn search_count<C: ConnectionTrait>(db: &C, q: &str) -> Result<i64, DbErr> {
     let backend = db.get_database_backend();
-    let stmt = if let Some(m) = fts_match(backend, q) {
-        crate::db::stmt(
-            backend,
-            "SELECT COUNT(*) as cnt FROM packages_fts WHERE packages_fts MATCH ?",
-            [m.into()],
-        )
-    } else {
-        let pattern = format!("%{q}%");
-        crate::db::stmt(
-            backend,
-            "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
-            [pattern.clone().into(), pattern.into()],
-        )
-    };
-    let row = db.query_one(stmt).await?;
+    let (join, where_sql, binds) = search_predicate(backend, q);
+    let sql = format!("SELECT COUNT(*) as cnt FROM packages p {join} WHERE {where_sql}");
+    let row = db.query_one(crate::db::stmt(backend, &sql, binds)).await?;
     Ok(row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0))
 }
