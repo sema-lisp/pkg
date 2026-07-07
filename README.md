@@ -221,6 +221,15 @@ docker compose up -d
 
 Data is stored in `./data/` (SQLite DB + blob files). Back up this directory.
 
+Manage users from the CLI (works on any backend, no manual DB edits) — including
+the first admin, which the API can't create:
+
+```bash
+sema-pkg admin create <username> <email> <password>   # create an admin
+sema-pkg admin promote <username>                      # grant admin to a user
+sema-pkg admin list                                    # promote/demote/ban/unban too
+```
+
 For production hosting — single-node SQLite + Litestream + R2, managed Postgres,
 and object-storage blobs — see [DEPLOYMENT.md](DEPLOYMENT.md).
 

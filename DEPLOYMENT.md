@@ -137,13 +137,14 @@ fly secrets set OAUTH_TOKEN_KEY=$(openssl rand -base64 24) \
   GITHUB_CLIENT_ID=… GITHUB_CLIENT_SECRET=…
 ```
 
-Deploy and make the first admin (the API can't — the DB is on the machine):
+Deploy and create the first admin (the API can't — the first admin is a
+chicken-and-egg):
 
 ```bash
 jake deploy                        # = fly deploy, with a confirmation prompt
-# register a user in the web UI, then:
-fly ssh console -C "sqlite3 /data/registry.db \
-  \"UPDATE users SET is_admin = 1 WHERE username = 'you'\""
+fly ssh console -C "sema-pkg admin create you you@example.com 'a-strong-password'"
+# or promote a user who already registered in the web UI:
+fly ssh console -C "sema-pkg admin promote you"
 ```
 
 ## Cloudflare R2 setup (for Paths A and B)
@@ -274,6 +275,6 @@ OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 - [ ] Unique `OAUTH_TOKEN_KEY` if GitHub OAuth is enabled (the server refuses to
       boot with the default key otherwise).
 - [ ] Durability for **both** DB and blobs (Litestream+R2, or managed DB + R2).
-- [ ] First admin created (the first admin can't be created via the API — promote a
-      user directly in the DB, e.g. `UPDATE users SET is_admin = 1 WHERE username = '…'`).
+- [ ] First admin created — `sema-pkg admin create <user> <email> <password>`
+      (or `sema-pkg admin promote <user>`); the API can't make the first admin.
 - [ ] Backups verified by actually restoring once.

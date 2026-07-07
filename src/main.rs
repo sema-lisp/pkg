@@ -5,6 +5,13 @@ use std::sync::Arc;
 async fn main() {
     dotenvy::dotenv().ok();
 
+    // `sema-pkg admin …` runs an offline management command and exits, rather
+    // than starting the server.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("admin") {
+        sema_pkg::cli::run_admin(&args[2..]).await;
+    }
+
     // Install the tracing subscriber with OpenTelemetry span export when
     // configured; the guard flushes on drop at the end of `main`. Every exporter
     // is a no-op until its env var is set.
