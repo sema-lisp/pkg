@@ -52,6 +52,23 @@ pub async fn set_admin<C: ConnectionTrait>(
         .map(|_| ())
 }
 
+/// Replace a user's password hash (operator-driven reset).
+pub async fn set_password<C: ConnectionTrait>(
+    db: &C,
+    user_id: i64,
+    password_hash: &str,
+) -> Result<(), DbErr> {
+    user::Entity::update_many()
+        .col_expr(
+            user::Column::PasswordHash,
+            Expr::value(password_hash.to_string()),
+        )
+        .filter(user::Column::Id.eq(user_id))
+        .exec(db)
+        .await
+        .map(|_| ())
+}
+
 /// Look up a user by their GitHub numeric id.
 pub async fn find_by_github_id<C: ConnectionTrait>(
     db: &C,

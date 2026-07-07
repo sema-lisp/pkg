@@ -5,11 +5,14 @@ use std::sync::Arc;
 async fn main() {
     dotenvy::dotenv().ok();
 
-    // `sema-pkg admin …` runs an offline management command and exits, rather
-    // than starting the server.
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("admin") {
-        sema_pkg::cli::run_admin(&args[2..]).await;
+    // `sema-pkg <admin|package|stats|doctor> …` runs an offline management
+    // command and exits, rather than starting the server.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(
+        args.first().map(String::as_str),
+        Some("admin" | "package" | "stats" | "doctor")
+    ) {
+        sema_pkg::cli::run(&args).await;
     }
 
     // Install the tracing subscriber with OpenTelemetry span export when

@@ -142,10 +142,14 @@ chicken-and-egg):
 
 ```bash
 jake deploy                        # = fly deploy, with a confirmation prompt
+fly ssh console -C "sema-pkg doctor"   # smoke-test DB, blob store, config
 fly ssh console -C "sema-pkg admin create you you@example.com 'a-strong-password'"
 # or promote a user who already registered in the web UI:
 fly ssh console -C "sema-pkg admin promote you"
 ```
+
+Other operator commands (`sema-pkg admin|package|stats`) are in the README —
+role/token management and package takedowns without touching the database.
 
 ## Cloudflare R2 setup (for Paths A and B)
 
