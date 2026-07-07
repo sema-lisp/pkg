@@ -40,6 +40,7 @@ async fn main() {
         config,
         blobs,
         metrics_render,
+        stats_cache: Default::default(),
     });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 

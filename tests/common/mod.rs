@@ -84,6 +84,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         config,
         blobs,
         metrics_render: None,
+        stats_cache: Default::default(),
     });
     let app = build_router(state.clone());
     (app, state, dir)

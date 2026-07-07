@@ -35,6 +35,8 @@ pub struct AppState {
     pub blobs: blob::BlobStore,
     /// `Some` when Prometheus metrics are enabled; serves `/metrics`.
     pub metrics_render: Option<MetricsRender>,
+    /// TTL cache for the admin dashboard summary.
+    pub stats_cache: dal::admin::StatsCache,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {

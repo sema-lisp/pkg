@@ -8,19 +8,47 @@
 //! 30-day download window binds a cutoff computed in Rust (see
 //! [`time::date_days_ago`]).
 
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Value};
+use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use crate::dal::time;
 use crate::entity::{package, report, user};
 
 /// Dashboard summary counters.
+#[derive(Clone)]
 pub struct Stats {
     pub total_users: i64,
     pub total_packages: i64,
     pub banned_users: i64,
     pub open_reports: i64,
     pub total_downloads: i64,
+}
+
+/// A TTL cache for [`stats`], which scans large tables and dominates the admin
+/// dashboard's latency under load. Recompute is single-flight: concurrent
+/// callers within the TTL share one result and one query.
+#[derive(Clone, Default)]
+pub struct StatsCache {
+    inner: Arc<Mutex<Option<(Instant, Stats)>>>,
+}
+
+impl StatsCache {
+    /// Return cached stats if younger than `ttl`, else recompute and store.
+    pub async fn get<C: ConnectionTrait>(&self, db: &C, ttl: Duration) -> Stats {
+        let mut guard = self.inner.lock().await;
+        if let Some((at, cached)) = guard.as_ref() {
+            if at.elapsed() < ttl {
+                return cached.clone();
+            }
+        }
+        let fresh = stats(db).await;
+        *guard = Some((Instant::now(), fresh.clone()));
+        fresh
+    }
 }
 
 /// Compute the dashboard summary. `total_downloads` is the rolling 30-day sum.

@@ -18,7 +18,12 @@ pub async fn stats(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
 ) -> impl IntoResponse {
-    let s = crate::dal::admin::stats(&state.db).await;
+    // Cached: the underlying scans are expensive and a dashboard tolerates a
+    // slightly stale summary.
+    let s = state
+        .stats_cache
+        .get(&state.db, std::time::Duration::from_secs(30))
+        .await;
 
     Json(serde_json::json!({
         "total_users": s.total_users,
