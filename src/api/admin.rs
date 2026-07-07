@@ -404,8 +404,14 @@ pub async fn remove_package(
     AdminUser(admin): AdminUser,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if !crate::dal::packages::delete_by_name(&state.db, &name).await {
+    let Some(orphaned) = crate::dal::packages::delete_by_name(&state.db, &name).await else {
         return Err(ApiError::not_found("Package not found"));
+    };
+    // Reclaim blobs no longer referenced by any version.
+    for key in orphaned {
+        if let Err(e) = state.blobs.delete(&key).await {
+            tracing::warn!("failed to delete orphaned blob {key}: {e}");
+        }
     }
 
     audit::log(

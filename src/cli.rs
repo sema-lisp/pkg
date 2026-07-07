@@ -222,11 +222,19 @@ async fn yank(
 
 async fn remove(db: &db::Db, name: Option<&String>) -> Result<String, String> {
     let name = name.ok_or("usage: sema-pkg package remove <name>")?;
-    if dal::packages::delete_by_name(db, name).await {
-        Ok(format!("Removed package {name} and all its versions"))
-    } else {
-        Err(format!("No such package: {name}"))
+    let Some(orphaned) = dal::packages::delete_by_name(db, name).await else {
+        return Err(format!("No such package: {name}"));
+    };
+    let blobs = BlobStore::from_config(&Config::from_env())?;
+    let mut reclaimed = 0;
+    for key in &orphaned {
+        if blobs.delete(key).await.is_ok() {
+            reclaimed += 1;
+        }
     }
+    Ok(format!(
+        "Removed package {name} and all its versions ({reclaimed} blob(s) reclaimed)"
+    ))
 }
 
 // ── stats / doctor ──────────────────────────────────────────────────────────

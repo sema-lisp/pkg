@@ -389,14 +389,25 @@ pub async fn yank_all<C: ConnectionTrait>(db: &C, name: &str) -> u64 {
 
 /// Admin: delete a package and everything hanging off it — dependencies (via a
 /// version_id subquery), versions, owners, the package row, and any reports
-/// targeting it. Best-effort per step, mirroring the original handler. Returns
-/// `false` if no package with `name` exists (so the caller can 404), `true`
-/// once the cascade has run.
-pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> bool {
-    let pkg_id = match find_by_name(db, name).await.ok().flatten() {
-        Some(p) => p.id,
-        None => return false,
-    };
+/// targeting it. Best-effort per step.
+///
+/// Returns `None` if no package with `name` exists (so the caller can 404), else
+/// `Some(orphaned_blob_keys)` — the blob keys no longer referenced by any
+/// remaining version, which the caller should delete from the blob store.
+/// Content-addressed blobs can be shared across packages, so a key is only
+/// orphaned when nothing else points at it.
+pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> Option<Vec<String>> {
+    let pkg_id = find_by_name(db, name).await.ok().flatten()?.id;
+
+    // The blob keys this package's versions reference, before deleting them.
+    let keys: Vec<String> = package_version::Entity::find()
+        .filter(package_version::Column::PackageId.eq(pkg_id))
+        .all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| v.blob_key)
+        .collect();
 
     // Delete dependencies via version_id join (raw SQL for subquery)
     let _ = db
@@ -429,7 +440,23 @@ pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> bool {
         .exec(db)
         .await;
 
-    true
+    // A key is orphaned only if no remaining version (of any package) uses it.
+    let mut orphaned = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for key in keys {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let still_used = package_version::Entity::find()
+            .filter(package_version::Column::BlobKey.eq(&key))
+            .count(db)
+            .await
+            .unwrap_or(1);
+        if still_used == 0 {
+            orphaned.push(key);
+        }
+    }
+    Some(orphaned)
 }
 
 /// A single search hit: `(name, description, created_at)`.

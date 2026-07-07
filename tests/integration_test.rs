@@ -817,6 +817,112 @@ async fn test_rate_limit_is_per_ip() {
     assert_ne!(res.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
+// ── Blob cleanup ──
+
+#[tokio::test]
+async fn test_remove_package_reclaims_blob() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let admin = register_admin(app.clone(), &state, "admin1", "admin1@example.com").await;
+    let sess = register_user(app.clone(), "bob", "bob@example.com").await;
+    let token = create_api_token(app.clone(), &sess, "t").await;
+
+    let data = b"contents to be reclaimed";
+    let res = publish_package(app.clone(), &token, "reclaim-pkg", "1.0.0", data).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let key = sema_pkg::blob::content_key(&gzip(data)).0;
+    assert!(
+        state.blobs.read(&key).await.is_some(),
+        "blob should exist after publish"
+    );
+
+    let res = delete_with_session(app.clone(), "/api/v1/admin/packages/reclaim-pkg", &admin).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        state.blobs.read(&key).await.is_none(),
+        "blob should be reclaimed after the package is removed"
+    );
+}
+
+#[tokio::test]
+async fn test_yank_keeps_blob() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let sess = register_user(app.clone(), "carol", "carol@example.com").await;
+    let token = create_api_token(app.clone(), &sess, "t").await;
+
+    let data = b"yanked but retained";
+    publish_package(app.clone(), &token, "yank-pkg", "1.0.0", data).await;
+    let key = sema_pkg::blob::content_key(&gzip(data)).0;
+
+    // Yank the version (bearer-token auth); the record and blob must remain.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/packages/yank-pkg/1.0.0/yank")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        state.blobs.read(&key).await.is_some(),
+        "yank must not delete the blob"
+    );
+}
+
+#[tokio::test]
+async fn test_shared_blob_kept_until_last_reference() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let admin = register_admin(app.clone(), &state, "admin1", "admin1@example.com").await;
+    let sess = register_user(app.clone(), "dave", "dave@example.com").await;
+    let token = create_api_token(app.clone(), &sess, "t").await;
+
+    // Identical content in two packages → one content-addressed blob.
+    let data = b"identical shared content";
+    assert_eq!(
+        publish_package(app.clone(), &token, "shared-a", "1.0.0", data)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        publish_package(app.clone(), &token, "shared-b", "1.0.0", data)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    let key = sema_pkg::blob::content_key(&gzip(data)).0;
+    assert!(state.blobs.read(&key).await.is_some());
+
+    // Removing one package must keep the blob — the other still references it.
+    assert_eq!(
+        delete_with_session(app.clone(), "/api/v1/admin/packages/shared-a", &admin)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(
+        state.blobs.read(&key).await.is_some(),
+        "blob is still referenced by shared-b"
+    );
+
+    // Removing the last reference reclaims it.
+    assert_eq!(
+        delete_with_session(app.clone(), "/api/v1/admin/packages/shared-b", &admin)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(
+        state.blobs.read(&key).await.is_none(),
+        "blob reclaimed once the last version referencing it is gone"
+    );
+}
+
 // ── Auth Helpers (unit-level) ──
 
 #[test]

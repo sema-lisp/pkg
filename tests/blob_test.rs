@@ -79,3 +79,25 @@ async fn test_s3_blob_store() {
     let retrieved_data = blob_store.read(&key).await.unwrap();
     assert_eq!(retrieved_data, data);
 }
+
+#[tokio::test]
+async fn test_filesystem_blob_delete() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        blob_dir: temp_dir.path().to_str().unwrap().to_string(),
+        ..Default::default()
+    };
+    let store = BlobStore::from_config(&config).unwrap();
+
+    // Deleting a missing blob is a no-op (idempotent).
+    store.delete("abmissingkey.tar.gz").await.unwrap();
+
+    // Store → read → delete → gone.
+    let (key, _, _) = store.store(b"delete me").await.unwrap();
+    assert!(store.read(&key).await.is_some());
+    store.delete(&key).await.unwrap();
+    assert!(store.read(&key).await.is_none());
+
+    // Deleting again still succeeds.
+    store.delete(&key).await.unwrap();
+}

@@ -112,4 +112,27 @@ impl BlobStore {
             }
         }
     }
+
+    /// Delete a blob. A missing object is treated as success (idempotent), since
+    /// content-addressed blobs may already have been reclaimed.
+    pub async fn delete(&self, key: &str) -> io::Result<()> {
+        match self {
+            BlobStore::Fs { dir } => {
+                let path = Path::new(dir).join(&key[..2]).join(key);
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            BlobStore::S3 { store } => {
+                let path = ObjectPath::from(shard(key));
+                match store.delete(&path).await {
+                    Ok(()) => Ok(()),
+                    Err(object_store::Error::NotFound { .. }) => Ok(()),
+                    Err(e) => Err(io::Error::other(e.to_string())),
+                }
+            }
+        }
+    }
 }
