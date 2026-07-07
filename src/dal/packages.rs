@@ -1,15 +1,28 @@
 //! Package aggregate: lookups, creation, description updates, and search.
 //!
-//! Search uses standard `LIKE` with bound patterns so it lowers identically on
-//! every backend; `created_at` is application-generated via [`time`].
+//! Search uses SQLite FTS5 (`MATCH`) when available and falls back to `LIKE`
+//! with bound patterns on other backends (Postgres accelerates the same `LIKE`
+//! via `pg_trgm`); `created_at` is application-generated via [`time`].
 
 use sea_orm::{
-    sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, Set,
+    sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr,
+    EntityTrait, PaginatorTrait, QueryFilter, Set,
 };
 
 use crate::dal::time;
 use crate::entity::{owner, package, package_version, report};
+
+/// The SQLite FTS5 `MATCH` expression for `q`, or `None` when the FTS path does
+/// not apply (non-SQLite backend, or an empty query). The query is quoted and
+/// prefixed so it matches package-name tokens; embedded quotes are doubled to
+/// keep the FTS5 syntax safe.
+fn fts_match(backend: DatabaseBackend, q: &str) -> Option<String> {
+    if backend == DatabaseBackend::Sqlite && !q.trim().is_empty() {
+        Some(format!("\"{}\"*", q.replace('"', "\"\"")))
+    } else {
+        None
+    }
+}
 
 /// Look up a package by its unique name.
 pub async fn find_by_name<C: ConnectionTrait>(
@@ -75,25 +88,35 @@ pub async fn search_page<C: ConnectionTrait>(
     limit: i64,
     offset: i64,
 ) -> Vec<ListingRow> {
-    let pattern = format!("%{q}%");
-    let sql = format!(
-        r#"SELECT p.name, p.description,
-           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
-           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
-           FROM packages p
-           WHERE p.name LIKE ? OR p.description LIKE ?
-           ORDER BY p.name
-           LIMIT {} OFFSET {}"#,
-        limit, offset
-    );
-    let rows = db
-        .query_all(crate::db::stmt(
-            db.get_database_backend(),
-            &sql,
-            [pattern.clone().into(), pattern.into()],
-        ))
-        .await
-        .unwrap_or_default();
+    let backend = db.get_database_backend();
+    let stmt = if let Some(m) = fts_match(backend, q) {
+        let sql = format!(
+            r#"SELECT p.name, p.description,
+               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+               FROM packages p
+               JOIN packages_fts f ON f.rowid = p.id
+               WHERE packages_fts MATCH ?
+               ORDER BY p.name
+               LIMIT {} OFFSET {}"#,
+            limit, offset
+        );
+        crate::db::stmt(backend, &sql, [m.into()])
+    } else {
+        let pattern = format!("%{q}%");
+        let sql = format!(
+            r#"SELECT p.name, p.description,
+               COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+               COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+               FROM packages p
+               WHERE p.name LIKE ? OR p.description LIKE ?
+               ORDER BY p.name
+               LIMIT {} OFFSET {}"#,
+            limit, offset
+        );
+        crate::db::stmt(backend, &sql, [pattern.clone().into(), pattern.into()])
+    };
+    let rows = db.query_all(stmt).await.unwrap_or_default();
     rows.iter().map(listing_row).collect()
 }
 
@@ -290,8 +313,8 @@ pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> bool {
 /// A single search hit: `(name, description, created_at)`.
 pub type SearchHit = (String, String, String);
 
-/// Search packages whose name or description matches `q` (case-sensitive
-/// `LIKE`), ordered by name, paginated with `limit`/`offset`.
+/// Search packages whose name or description matches `q`, ordered by name,
+/// paginated with `limit`/`offset`.
 #[tracing::instrument(skip_all, level = "debug")]
 pub async fn search<C: ConnectionTrait>(
     db: &C,
@@ -299,21 +322,29 @@ pub async fn search<C: ConnectionTrait>(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SearchHit>, DbErr> {
-    let pattern = format!("%{q}%");
-    let sql = format!(
-        r#"SELECT name, description, created_at FROM packages
-           WHERE name LIKE ? OR description LIKE ?
-           ORDER BY name
-           LIMIT {} OFFSET {}"#,
-        limit, offset
-    );
-    let rows = db
-        .query_all(crate::db::stmt(
-            db.get_database_backend(),
-            &sql,
-            [pattern.clone().into(), pattern.into()],
-        ))
-        .await?;
+    let backend = db.get_database_backend();
+    let stmt = if let Some(m) = fts_match(backend, q) {
+        let sql = format!(
+            r#"SELECT p.name, p.description, p.created_at FROM packages p
+               JOIN packages_fts f ON f.rowid = p.id
+               WHERE packages_fts MATCH ?
+               ORDER BY p.name
+               LIMIT {} OFFSET {}"#,
+            limit, offset
+        );
+        crate::db::stmt(backend, &sql, [m.into()])
+    } else {
+        let pattern = format!("%{q}%");
+        let sql = format!(
+            r#"SELECT name, description, created_at FROM packages
+               WHERE name LIKE ? OR description LIKE ?
+               ORDER BY name
+               LIMIT {} OFFSET {}"#,
+            limit, offset
+        );
+        crate::db::stmt(backend, &sql, [pattern.clone().into(), pattern.into()])
+    };
+    let rows = db.query_all(stmt).await?;
 
     Ok(rows
         .iter()
@@ -329,13 +360,21 @@ pub async fn search<C: ConnectionTrait>(
 /// Count packages matching the same predicate as [`search`].
 #[tracing::instrument(skip_all, level = "debug")]
 pub async fn search_count<C: ConnectionTrait>(db: &C, q: &str) -> Result<i64, DbErr> {
-    let pattern = format!("%{q}%");
-    let row = db
-        .query_one(crate::db::stmt(
-            db.get_database_backend(),
+    let backend = db.get_database_backend();
+    let stmt = if let Some(m) = fts_match(backend, q) {
+        crate::db::stmt(
+            backend,
+            "SELECT COUNT(*) as cnt FROM packages_fts WHERE packages_fts MATCH ?",
+            [m.into()],
+        )
+    } else {
+        let pattern = format!("%{q}%");
+        crate::db::stmt(
+            backend,
             "SELECT COUNT(*) as cnt FROM packages WHERE name LIKE ? OR description LIKE ?",
             [pattern.clone().into(), pattern.into()],
-        ))
-        .await?;
+        )
+    };
+    let row = db.query_one(stmt).await?;
     Ok(row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0))
 }
