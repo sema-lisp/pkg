@@ -74,6 +74,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/login", post(api::auth::login));
     let auth = ratelimit::auth(auth, config);
 
+    // Install hot path — package metadata + tarball download. Read-only and
+    // pulled in bulk during dependency resolution, so it gets its own generous
+    // limiter tier rather than sharing the strict global one (which would 429
+    // legitimate multi-package installs).
+    let read = Router::new()
+        .route("/api/v1/packages/{name}", get(api::packages::get_package))
+        .route(
+            "/api/v1/packages/{name}/downloads",
+            get(api::packages::download_stats),
+        )
+        .route(
+            "/api/v1/packages/{name}/{version}/download",
+            get(api::packages::download),
+        );
+    let read = ratelimit::read(read, config);
+
     // The rest of the API — global rate limit.
     let api = Router::new()
         .route("/api/v1/auth/logout", post(api::auth::logout))
@@ -86,11 +102,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/tokens/{id}", delete(api::tokens::revoke))
         // Packages API
-        .route("/api/v1/packages/{name}", get(api::packages::get_package))
-        .route(
-            "/api/v1/packages/{name}/downloads",
-            get(api::packages::download_stats),
-        )
         .route(
             "/api/v1/packages/{name}/{version}",
             // Axum's default extractor body cap (2 MB) would silently override
@@ -98,10 +109,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             put(api::packages::publish).layer(DefaultBodyLimit::max(
                 config.max_tarball_bytes + 1024 * 1024,
             )),
-        )
-        .route(
-            "/api/v1/packages/{name}/{version}/download",
-            get(api::packages::download),
         )
         .route(
             "/api/v1/packages/{name}/{version}/yank",
@@ -164,6 +171,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let app = public
         .merge(auth)
+        .merge(read)
         .merge(api)
         // Prometheus RED metrics per matched route (runs inside routing, so the
         // route template is available for a bounded-cardinality label). A no-op

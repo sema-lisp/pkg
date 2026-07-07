@@ -105,8 +105,10 @@ All configuration is via environment variables with sensible defaults:
 | `GITHUB_CLIENT_SECRET` | — | GitHub OAuth app secret (optional) |
 | `OAUTH_TOKEN_KEY` | — | 32-byte key encrypting stored GitHub tokens. **Required when GitHub OAuth is enabled** — the server refuses to boot if left at the insecure default. |
 | `RATE_LIMIT_ENABLED` | `true` | IP-keyed request rate limiting (see [DEPLOYMENT.md](DEPLOYMENT.md)). Disable only behind a gateway that limits for you. |
-| `RATE_LIMIT_RPS` | `20` | Sustained requests/sec per IP on the general API |
+| `RATE_LIMIT_RPS` | `20` | Sustained requests/sec per IP on the general/write API |
 | `RATE_LIMIT_BURST` | `40` | Burst allowance per IP before throttling |
+| `RATE_LIMIT_READ_RPS` | `100` | Sustained requests/sec per IP on the install path (metadata + download); generous so multi-package installs aren't throttled |
+| `RATE_LIMIT_READ_BURST` | `500` | Burst allowance per IP on the install path |
 
 ## Database engines
 

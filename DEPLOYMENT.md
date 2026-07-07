@@ -203,8 +203,15 @@ headers, and 429s carry `retry-after`.
 | Variable | Default | Description |
 |---|---|---|
 | `RATE_LIMIT_ENABLED` | `true` | Set `false` only behind a trusted gateway that already rate-limits. |
-| `RATE_LIMIT_RPS` | `20` | Sustained requests/sec per IP on the general API. |
+| `RATE_LIMIT_RPS` | `20` | Sustained requests/sec per IP on the general/write API (publish, search, admin). |
 | `RATE_LIMIT_BURST` | `40` | Burst allowance per IP before throttling. |
+| `RATE_LIMIT_READ_RPS` | `100` | Sustained requests/sec per IP on the install hot path (package metadata + tarball download). Generous so multi-package installs aren't throttled. |
+| `RATE_LIMIT_READ_BURST` | `500` | Burst allowance per IP on the install hot path. |
+
+The install path (metadata + download) is deliberately on a separate, generous
+tier: resolving one project pulls many packages in a burst from a single IP, so
+sharing the strict general limit would 429 legitimate installs. Publishing,
+search, and admin stay on the tighter general tier.
 
 **Behind a reverse proxy**, the limiter keys on `X-Forwarded-For` / `X-Real-IP` /
 `Forwarded`. Make sure your proxy sets one of these (Caddy and Fly do by default;

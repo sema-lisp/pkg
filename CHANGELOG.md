@@ -74,3 +74,9 @@ steps required.
   reset-password, revoke-tokens, yank, remove) now write to the audit trail —
   previously they were invisible in the admin console. Entries are attributed to
   `cli:<os-user>` so CLI actions are accountable alongside web actions.
+- Rate limiting no longer throttles installs. The install hot path (package
+  metadata + tarball download) now has its own generous tier
+  (`RATE_LIMIT_READ_RPS`/`RATE_LIMIT_READ_BURST`, default 100 rps / 500 burst)
+  instead of sharing the strict general limit (20/40) — resolving a project with
+  many dependencies was tripping the shared per-IP burst and getting 429'd.
+  Publishing, search, and admin stay on the tighter general tier.

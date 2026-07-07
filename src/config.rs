@@ -37,6 +37,11 @@ pub struct Config {
     pub rate_limit_enabled: bool,
     pub rate_limit_rps: u32,
     pub rate_limit_burst: u32,
+    // The install/download hot path (package metadata + tarball fetch) gets its
+    // own generous tier: resolving one project pulls many packages in a burst
+    // from a single IP, so a strict shared limit would 429 legitimate installs.
+    pub rate_limit_read_rps: u32,
+    pub rate_limit_read_burst: u32,
 }
 
 impl Default for Config {
@@ -60,6 +65,8 @@ impl Default for Config {
             rate_limit_enabled: true,
             rate_limit_rps: 20,
             rate_limit_burst: 40,
+            rate_limit_read_rps: 100,
+            rate_limit_read_burst: 500,
         }
     }
 }
@@ -113,6 +120,16 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .filter(|&v| v > 0)
                 .unwrap_or(40),
+            rate_limit_read_rps: env::var("RATE_LIMIT_READ_RPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v| v > 0)
+                .unwrap_or(100),
+            rate_limit_read_burst: env::var("RATE_LIMIT_READ_BURST")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v| v > 0)
+                .unwrap_or(500),
         }
     }
 

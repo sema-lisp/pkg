@@ -75,6 +75,11 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         rate_limit_enabled,
         rate_limit_rps: 20,
         rate_limit_burst: 40,
+        // Read tier deliberately more generous than the global burst so the
+        // install-path test can prove downloads survive a burst that would trip
+        // the global limiter.
+        rate_limit_read_rps: 20,
+        rate_limit_read_burst: 100,
     };
 
     let blobs =

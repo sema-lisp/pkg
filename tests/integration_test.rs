@@ -1407,6 +1407,8 @@ fn test_check_production_secrets_rejects_default_key_with_github() {
         rate_limit_enabled: false,
         rate_limit_rps: 20,
         rate_limit_burst: 40,
+        rate_limit_read_rps: 100,
+        rate_limit_read_burst: 500,
     };
 
     // Default key + no GitHub OAuth: allowed (the key is never used)
@@ -2916,4 +2918,33 @@ fn test_validate_homepage() {
     assert!(sema_pkg::auth::validate_homepage("data:text/html,x").is_err());
     assert!(sema_pkg::auth::validate_homepage("example.com").is_err());
     assert!(sema_pkg::auth::validate_homepage("https://").is_err());
+}
+
+#[tokio::test]
+async fn test_install_path_not_throttled_by_global_burst() {
+    // Regression: installs resolve many packages in a burst from one IP. The
+    // download/metadata endpoints live on the generous read tier (burst 100 in
+    // tests), so a run of 60 requests — well past the global burst of 40 — must
+    // never 429. (404s are fine; the package need not exist.)
+    let (app, _dir) = test_app_rate_limited().await;
+
+    for i in 0..60 {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/packages/some-pkg/1.0.0/download")
+                    .header("x-forwarded-for", "203.0.113.55")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "install download request {i} was rate-limited on the read tier"
+        );
+    }
 }

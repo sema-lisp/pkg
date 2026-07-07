@@ -1,9 +1,13 @@
 //! IP-keyed request rate limiting (GCRA, via `tower_governor`).
 //!
-//! Two tiers, applied to disjoint route groups in [`crate::build_router`]:
+//! Three tiers, applied to disjoint route groups in [`crate::build_router`]:
 //!
-//! - **Global** — guards the general API surface (downloads, search, publish,
-//!   admin). Tunable via `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST`.
+//! - **Read** — the install hot path (package metadata + tarball download).
+//!   Deliberately generous, since resolving one project pulls many packages in
+//!   a burst from a single IP. Tunable via `RATE_LIMIT_READ_RPS` /
+//!   `RATE_LIMIT_READ_BURST`.
+//! - **Global** — guards the general/write API surface (publish, owners,
+//!   search, tokens, admin). Tunable via `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST`.
 //! - **Auth** — a stricter, fixed limit on `register`/`login` to blunt
 //!   credential brute-forcing.
 //!
@@ -66,6 +70,20 @@ where
         return router;
     }
     apply(router, config.rate_limit_rps, config.rate_limit_burst)
+}
+
+/// Apply the generous **read/install** rate limit to `router`, unless disabled
+/// in config. Covers the endpoints an install pulls in bulk (package metadata
+/// and tarball downloads), so a normal multi-package install is never throttled
+/// while a runaway client loop is still bounded.
+pub fn read<S>(router: Router<S>, config: &Config) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    if !config.rate_limit_enabled {
+        return router;
+    }
+    apply(router, config.rate_limit_read_rps, config.rate_limit_read_burst)
 }
 
 /// Apply the stricter **auth** rate limit to `router`, unless disabled in config.
