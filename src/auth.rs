@@ -302,3 +302,20 @@ pub fn validate_email(email: &str) -> Result<(), &'static str> {
     }
     Ok(())
 }
+
+/// Validate a user-supplied homepage URL: must be an absolute `http`/`https`
+/// URL with a host. Rejects other schemes (`javascript:`, `data:`, `file:`)
+/// so the value is safe to render as an `href`.
+pub fn validate_homepage(url: &str) -> Result<(), &'static str> {
+    if url.len() > 255 {
+        return Err("Homepage URL is too long (max 255 characters)");
+    }
+    let parsed = url::Url::parse(url).map_err(|_| "Homepage must be a valid URL")?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Homepage URL must start with http:// or https://");
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("Homepage URL must include a host");
+    }
+    Ok(())
+}

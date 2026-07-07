@@ -2881,3 +2881,39 @@ fn test_official_username_allowlist() {
     assert!(sema_pkg::auth::is_official("SEMA"));
     assert!(!sema_pkg::auth::is_official("helge"));
 }
+
+#[tokio::test]
+async fn test_update_profile_rejects_bad_homepage() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "badhp-user", "badhp-user@test.com").await;
+
+    for bad in [
+        "javascript:alert(1)",
+        "not-a-url",
+        "ftp://example.com",
+        "//example.com",
+    ] {
+        let res = put_json_with_session(
+            app.clone(),
+            "/api/v1/account",
+            serde_json::json!({ "email": "badhp-user@test.com", "homepage": bad }),
+            &session,
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "homepage {bad:?} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn test_validate_homepage() {
+    assert!(sema_pkg::auth::validate_homepage("https://example.com").is_ok());
+    assert!(sema_pkg::auth::validate_homepage("http://example.com/path?q=1").is_ok());
+    assert!(sema_pkg::auth::validate_homepage("javascript:alert(1)").is_err());
+    assert!(sema_pkg::auth::validate_homepage("data:text/html,x").is_err());
+    assert!(sema_pkg::auth::validate_homepage("example.com").is_err());
+    assert!(sema_pkg::auth::validate_homepage("https://").is_err());
+}
