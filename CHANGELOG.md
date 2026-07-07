@@ -70,3 +70,7 @@ steps required.
 - Package removal now reclaims orphaned blobs (dedup-safe: a content-addressed
   blob is only deleted when no remaining version references it). Yank keeps the
   blob.
+- Operator CLI mutations (create-admin, promote/demote, ban/unban,
+  reset-password, revoke-tokens, yank, remove) now write to the audit trail —
+  previously they were invisible in the admin console. Entries are attributed to
+  `cli:<os-user>` so CLI actions are accountable alongside web actions.

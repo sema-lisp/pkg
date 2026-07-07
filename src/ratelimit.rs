@@ -37,7 +37,7 @@ where
 {
     let conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(per_second.max(1) as u64)
+            .per_millisecond(replenish_interval_ms(per_second))
             .burst_size(burst.max(1))
             .key_extractor(SmartIpKeyExtractor)
             .use_headers() // emit x-ratelimit-* + retry-after on 429
@@ -78,4 +78,27 @@ where
         return router;
     }
     apply(router, 1, 5)
+}
+
+/// GCRA replenish interval for a sustained requests-per-second rate.
+/// tower_governor's `per_second(n)` sets the *interval* (one request per `n`
+/// seconds), not the rate — a config of 20 rps would otherwise throttle to one
+/// request per 20 seconds once the burst is spent. Clamped to ≥1ms (rates
+/// above 1000 rps saturate).
+fn replenish_interval_ms(per_second: u32) -> u64 {
+    (1000 / per_second.max(1) as u64).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replenish_interval_ms;
+
+    #[test]
+    fn interval_is_inverse_of_rate() {
+        assert_eq!(replenish_interval_ms(20), 50); // 20 rps → every 50ms
+        assert_eq!(replenish_interval_ms(1), 1000); // 1 rps → every second
+        assert_eq!(replenish_interval_ms(1000), 1);
+        assert_eq!(replenish_interval_ms(0), 1000); // clamped like rps=1
+        assert_eq!(replenish_interval_ms(5000), 1); // saturates at 1ms
+    }
 }

@@ -75,6 +75,16 @@ async fn user_id(db: &db::Db, username: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("No such user: {username}"))
 }
 
+/// Actor label for audit entries produced by the operator CLI. Tagged with the
+/// invoking OS user when available so privileged CLI actions are attributable
+/// in the same audit trail as the admin console.
+fn cli_actor() -> String {
+    match std::env::var("USER").or_else(|_| std::env::var("LOGNAME")) {
+        Ok(u) if !u.is_empty() => format!("cli:{u}"),
+        _ => "cli".to_string(),
+    }
+}
+
 // ── admin ───────────────────────────────────────────────────────────────────
 
 async fn run_admin(args: &[String]) -> Result<String, String> {
@@ -102,6 +112,16 @@ async fn set_role(db: &db::Db, username: Option<&String>, admin: bool) -> Result
     dal::users::set_admin(db, id, admin)
         .await
         .map_err(|e| e.to_string())?;
+    let role = if admin { "admin" } else { "user" };
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "set_role",
+        Some("user"),
+        Some(name),
+        Some(&format!("set role to {role}")),
+    )
+    .await;
     Ok(format!(
         "{name} is {} an admin",
         if admin { "now" } else { "no longer" }
@@ -114,6 +134,15 @@ async fn set_ban(db: &db::Db, username: Option<&String>, banned: bool) -> Result
     dal::users::set_banned(db, id, banned)
         .await
         .map_err(|e| e.to_string())?;
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        if banned { "ban_user" } else { "unban_user" },
+        Some("user"),
+        Some(name),
+        None,
+    )
+    .await;
     Ok(format!(
         "{name} is {}",
         if banned { "banned" } else { "unbanned" }
@@ -134,6 +163,15 @@ async fn reset_password(
     dal::users::set_password(db, id, &auth::hash_password(pw))
         .await
         .map_err(|e| e.to_string())?;
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "reset_password",
+        Some("user"),
+        Some(name),
+        None,
+    )
+    .await;
     Ok(format!("Password reset for {name}"))
 }
 
@@ -141,6 +179,15 @@ async fn revoke_tokens(db: &db::Db, username: Option<&String>) -> Result<String,
     let name = username.ok_or("usage: sema-pkg admin revoke-tokens <username>")?;
     let id = user_id(db, name).await?;
     let n = dal::tokens::revoke_all_for_user(db, id).await;
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "revoke_tokens",
+        Some("user"),
+        Some(name),
+        Some(&format!("revoked {n} tokens")),
+    )
+    .await;
     Ok(format!("Revoked {n} token(s) for {name}"))
 }
 
@@ -165,6 +212,15 @@ async fn create_admin(
     dal::users::set_admin(db, model.id, true)
         .await
         .map_err(|e| e.to_string())?;
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "create_admin",
+        Some("user"),
+        Some(&model.username),
+        None,
+    )
+    .await;
     Ok(format!("Created admin user '{}'", model.username))
 }
 
@@ -215,7 +271,18 @@ async fn yank(
         .ok_or_else(|| format!("No such package: {name}"))?;
     match dal::versions::yank(db, pkg.id, version).await {
         Ok(0) => Err(format!("No such version: {name}@{version}")),
-        Ok(_) => Ok(format!("Yanked {name}@{version}")),
+        Ok(_) => {
+            crate::audit::log(
+                db,
+                &cli_actor(),
+                "yank",
+                Some("version"),
+                Some(name),
+                Some(version),
+            )
+            .await;
+            Ok(format!("Yanked {name}@{version}"))
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -232,6 +299,15 @@ async fn remove(db: &db::Db, name: Option<&String>) -> Result<String, String> {
             reclaimed += 1;
         }
     }
+    crate::audit::log(
+        db,
+        &cli_actor(),
+        "remove_package",
+        Some("package"),
+        Some(name),
+        Some(&format!("{reclaimed} blobs reclaimed")),
+    )
+    .await;
     Ok(format!(
         "Removed package {name} and all its versions ({reclaimed} blob(s) reclaimed)"
     ))
