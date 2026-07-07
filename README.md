@@ -91,6 +91,7 @@ All configuration is via environment variables with sensible defaults:
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `3000` | Listen port |
 | `DATABASE_URL` | `sqlite://data/registry.db?mode=rwc` | Database URL. The engine is inferred from the scheme — `sqlite:`, `postgres:`, or `mysql:` (see [Database engines](#database-engines)). |
+| `DATABASE_MAX_CONNECTIONS` | `10` | Connection pool size (read concurrency). |
 | `BLOB_DIR` | `data/blobs` | Directory for package tarballs (used when S3 is not configured) |
 | `BLOB_S3_BUCKET` | — | Bucket for S3-compatible blob storage (Cloudflare R2, MinIO, S3). When set, tarballs go to object storage instead of `BLOB_DIR` — required for stateless / multi-instance deploys. |
 | `BLOB_S3_ENDPOINT` | — | S3 endpoint URL (e.g. `https://<account>.r2.cloudflarestorage.com`). Omit for AWS S3. |

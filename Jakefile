@@ -120,6 +120,15 @@ task e2e headed="":
     @cd e2e
     npx playwright test {{headed}}
 
+# Concurrent latency test over every endpoint. Point BASE_URL at a running,
+# seeded server (start it with RATE_LIMIT_ENABLED=false so the limiter does not
+# reject the load). Tune with LOADTEST_CONCURRENCY / LOADTEST_DURATION / etc.
+@group test
+@desc "Concurrent endpoint latency load test (params: url=http://localhost:3000)"
+task loadtest url="http://localhost:3000":
+    @needs cargo
+    BASE_URL={{url}} cargo run --release --features loadtest --bin loadtest
+
 # One param'd recipe replaces test-sqlite/postgres/mysql. SQLite is file-based
 # (no server container); Postgres/MySQL get their server upped and stopped.
 @group test

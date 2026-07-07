@@ -33,21 +33,24 @@ where
 /// `mysql:`), so the same binary runs on all three. Schema is applied via the
 /// engine-agnostic SeaORM migrations in [`crate::migration`].
 pub async fn connect(database_url: &str) -> Db {
-    let is_sqlite = database_url.starts_with("sqlite");
     // An in-memory SQLite DB lives inside a single connection, so the whole
     // pool must share one connection or migrations and queries would land in
     // different (empty) databases.
     let in_memory = database_url.contains(":memory:");
 
+    // Pool size caps read concurrency; tune with DATABASE_MAX_CONNECTIONS. For
+    // SQLite, bigger is not always better — WAL readers run concurrently but
+    // share CPU, so oversubscribing hurts on expensive queries. An in-memory DB
+    // must stay at one shared connection or each sees a different (empty) DB.
+    let max = std::env::var("DATABASE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10);
+
     let mut opts = sea_orm::ConnectOptions::new(database_url.to_string());
-    opts.max_connections(if in_memory {
-        1
-    } else if is_sqlite {
-        5
-    } else {
-        10
-    })
-    .min_connections(1);
+    opts.max_connections(if in_memory { 1 } else { max })
+        .min_connections(1);
 
     let db = Database::connect(opts)
         .await

@@ -57,12 +57,19 @@ metrics-process = "2.4.3"
 [features]
 # Compiles the `seed` binary and its fake-data generator.
 seed = ["dep:fake"]
+# Compiles the `loadtest` binary (uses the existing reqwest/tokio deps).
+loadtest = []
 
 # Engine-portable dev data seeder. Feature-gated so `cargo build` (production)
 # skips it: `cargo run --features seed --bin seed`.
 [[bin]]
 name = "seed"
 required-features = ["seed"]
+
+# Concurrent endpoint latency load test. `cargo run --features loadtest --bin loadtest`.
+[[bin]]
+name = "loadtest"
+required-features = ["loadtest"]
 
 [dev-dependencies]
 tempfile = "3"
