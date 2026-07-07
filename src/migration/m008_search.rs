@@ -23,9 +23,11 @@ impl MigrationTrait for Migration {
         let db = manager.get_connection();
         match manager.get_database_backend() {
             DbBackend::Sqlite => {
+                // `prefix='2 3'` builds auxiliary indexes so 2/3-char prefix
+                // queries (`"htt"*`) resolve without scanning the whole term list.
                 db.execute_unprepared(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(\
-                     name, description, content='packages', content_rowid='id');",
+                     name, description, content='packages', content_rowid='id', prefix='2 3');",
                 )
                 .await?;
                 db.execute_unprepared(

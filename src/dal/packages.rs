@@ -70,17 +70,50 @@ fn mysql_boolean(q: &str) -> String {
         .join(" ")
 }
 
-/// Relevance `ORDER BY`: exact name match first, then a name prefix, then the
-/// rest, breaking ties alphabetically. Returns the fragment and its binds (which
-/// follow the WHERE binds). An empty query just orders by name.
-fn relevance_order(q: &str) -> (String, Vec<sea_orm::Value>) {
-    if q.trim().is_empty() {
-        return ("p.name".into(), vec![]);
+/// How many raw matches to pull before ranking them in memory. A common term
+/// can match hundreds of thousands of packages; ranking them all in SQL (an
+/// `ORDER BY` over the full match set) costs seconds at scale, so bound the
+/// candidate window and rank it in Rust instead. Deeper pages beyond the window
+/// fall away — search that broad should be refined, not paged.
+const SEARCH_CANDIDATES: i64 = 200;
+
+/// Result counts are capped here; the UI presents anything at the cap as "N+".
+const SEARCH_COUNT_CAP: i64 = 1000;
+
+/// Relevance rank of a candidate name against the query: 0 exact, 1 name-prefix,
+/// 2 other. Sorting by `(rank, name)` surfaces the searched-for package first.
+fn rank(name: &str, q: &str) -> u8 {
+    if name.eq_ignore_ascii_case(q) {
+        0
+    } else if !q.is_empty()
+        && q.len() <= name.len()
+        && name.is_char_boundary(q.len())
+        && name[..q.len()].eq_ignore_ascii_case(q)
+    {
+        1
+    } else {
+        2
     }
-    (
-        "CASE WHEN p.name = ? THEN 0 WHEN p.name LIKE ? THEN 1 ELSE 2 END, p.name".into(),
-        vec![q.into(), format!("{q}%").into()],
-    )
+}
+
+/// Sort a candidate window by `(rank, name)` and return the requested page,
+/// ensuring the exact match (if any) leads.
+fn rank_page<T: Clone>(
+    mut hits: Vec<T>,
+    name_of: impl Fn(&T) -> &str,
+    q: &str,
+    limit: i64,
+    offset: i64,
+) -> Vec<T> {
+    hits.sort_by(|a, b| {
+        rank(name_of(a), q)
+            .cmp(&rank(name_of(b), q))
+            .then_with(|| name_of(a).cmp(name_of(b)))
+    });
+    hits.into_iter()
+        .skip(offset.max(0) as usize)
+        .take(limit.max(0) as usize)
+        .collect()
 }
 
 /// Look up a package by its unique name.
@@ -168,23 +201,45 @@ pub async fn search_page<C: ConnectionTrait>(
     offset: i64,
 ) -> Vec<ListingRow> {
     let backend = db.get_database_backend();
-    let (join, where_sql, mut binds) = search_predicate(backend, q);
-    let (order, order_binds) = relevance_order(q);
-    binds.extend(order_binds);
+    let (join, where_sql, binds) = search_predicate(backend, q);
     let sql = format!(
         r#"SELECT p.name, p.description,
            COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
            COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
            FROM packages p {join}
            WHERE {where_sql}
-           ORDER BY {order}
-           LIMIT {limit} OFFSET {offset}"#
+           LIMIT {SEARCH_CANDIDATES}"#
     );
     let rows = db
         .query_all(crate::db::stmt(backend, &sql, binds))
         .await
         .unwrap_or_default();
-    rows.iter().map(listing_row).collect()
+    let mut hits: Vec<ListingRow> = rows.iter().map(listing_row).collect();
+    // Guarantee the exact match is ranked even if it fell outside the window.
+    if !q.trim().is_empty() && !hits.iter().any(|h| h.0.eq_ignore_ascii_case(q)) {
+        if let Some(row) = one_listing(db, q).await {
+            hits.push(row);
+        }
+    }
+    rank_page(hits, |h| &h.0, q, limit, offset)
+}
+
+/// A single package's listing row (name, description, latest version, publish
+/// time), or `None` if the package does not exist.
+async fn one_listing<C: ConnectionTrait>(db: &C, name: &str) -> Option<ListingRow> {
+    let sql = r#"SELECT p.name, p.description,
+           COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
+           COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
+           FROM packages p WHERE p.name = ? LIMIT 1"#;
+    let rows = db
+        .query_all(crate::db::stmt(
+            db.get_database_backend(),
+            sql,
+            [name.into()],
+        ))
+        .await
+        .ok()?;
+    rows.first().map(listing_row)
 }
 
 /// Packages owned by `user_id` for the account page, each with its latest
@@ -390,18 +445,14 @@ pub async fn search<C: ConnectionTrait>(
     offset: i64,
 ) -> Result<Vec<SearchHit>, DbErr> {
     let backend = db.get_database_backend();
-    let (join, where_sql, mut binds) = search_predicate(backend, q);
-    let (order, order_binds) = relevance_order(q);
-    binds.extend(order_binds);
+    let (join, where_sql, binds) = search_predicate(backend, q);
     let sql = format!(
         r#"SELECT p.name, p.description, p.created_at FROM packages p {join}
            WHERE {where_sql}
-           ORDER BY {order}
-           LIMIT {limit} OFFSET {offset}"#
+           LIMIT {SEARCH_CANDIDATES}"#
     );
     let rows = db.query_all(crate::db::stmt(backend, &sql, binds)).await?;
-
-    Ok(rows
+    let mut hits: Vec<SearchHit> = rows
         .iter()
         .filter_map(|r| {
             let name: String = r.try_get("", "name").ok()?;
@@ -409,15 +460,36 @@ pub async fn search<C: ConnectionTrait>(
             let created_at: String = r.try_get("", "created_at").ok()?;
             Some((name, description, created_at))
         })
-        .collect())
+        .collect();
+    if !q.trim().is_empty() && !hits.iter().any(|h| h.0.eq_ignore_ascii_case(q)) {
+        if let Ok(Some(p)) = find_by_name(db, q).await {
+            hits.push((p.name, p.description, p.created_at));
+        }
+    }
+    Ok(rank_page(hits, |h| &h.0, q, limit, offset))
 }
 
 /// Count packages matching the same predicate as [`search`].
 #[tracing::instrument(skip_all, level = "debug")]
 pub async fn search_count<C: ConnectionTrait>(db: &C, q: &str) -> Result<i64, DbErr> {
+    if q.trim().is_empty() {
+        return Ok(count(db).await);
+    }
     let backend = db.get_database_backend();
-    let (join, where_sql, binds) = search_predicate(backend, q);
-    let sql = format!("SELECT COUNT(*) as cnt FROM packages p {join} WHERE {where_sql}");
+    let (_join, where_sql, binds) = search_predicate(backend, q);
+    // On SQLite, count the FTS index directly — joining to `packages` would do a
+    // row lookup per match (seconds for a common term). Other backends filter
+    // `packages` in place.
+    let from = if backend == DatabaseBackend::Sqlite {
+        "packages_fts"
+    } else {
+        "packages p"
+    };
+    // Cap the count: an exact total for a term matching millions is expensive and
+    // pointless — the UI shows "1000+". The inner LIMIT lets the scan stop early.
+    let sql = format!(
+        "SELECT COUNT(*) as cnt FROM (SELECT 1 FROM {from} WHERE {where_sql} LIMIT {SEARCH_COUNT_CAP}) t"
+    );
     let row = db.query_one(crate::db::stmt(backend, &sql, binds)).await?;
     Ok(row.and_then(|r| r.try_get("", "cnt").ok()).unwrap_or(0))
 }

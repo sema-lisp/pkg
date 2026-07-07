@@ -304,12 +304,14 @@ async fn main() {
     }
     let blobs = BlobStore::from_config(&config).expect("failed to init blob store");
 
-    // For a large fresh load, drop the secondary indexes and rebuild them once
-    // at the end — cheaper than maintaining them across every insert.
+    // For a large fresh load, drop the secondary indexes and the SQLite FTS
+    // index and rebuild them once at the end — far cheaper than maintaining them
+    // across every insert.
     let defer_indexes = fresh && counts.packages > 100_000;
     if defer_indexes {
-        println!("Dropping secondary indexes for bulk load (rebuilt at the end)...");
+        println!("Dropping secondary + search indexes for bulk load (rebuilt at the end)...");
         perf_indexes(&db, false).await;
+        defer_fts(&db, false).await;
     }
 
     let mut rng = StdRng::seed_from_u64(42);
@@ -793,9 +795,10 @@ async fn main() {
     );
 
     if defer_indexes {
-        println!("Rebuilding secondary indexes...");
+        println!("Rebuilding secondary + search indexes...");
         std::io::stdout().flush().ok();
         perf_indexes(&db, true).await;
+        defer_fts(&db, true).await;
         println!("Indexes rebuilt  [{:.1}s]", elapsed(t0));
     }
 
@@ -812,14 +815,23 @@ async fn main() {
 
 // ── Insert helper ─────────────────────────────────────────────────────────
 
-// Secondary indexes (mirrors migration m007) dropped before a bulk load and
-// rebuilt after — a single sorted build is far cheaper than maintaining them
+// Secondary indexes (mirrors migrations m007 + m009) dropped before a bulk load
+// and rebuilt after — a single sorted build is far cheaper than maintaining them
 // incrementally across tens of millions of inserts.
-const PERF_INDEXES: &[(&str, &str, &str)] = &[
-    ("idx_owners_user", "owners", "user_id"),
-    ("idx_users_created", "users", "created_at"),
-    ("idx_packages_created", "packages", "created_at"),
-    ("idx_versions_published", "package_versions", "published_at"),
+const PERF_INDEXES: &[(&str, &str, &[&str])] = &[
+    ("idx_owners_user", "owners", &["user_id"]),
+    ("idx_users_created", "users", &["created_at"]),
+    ("idx_packages_created", "packages", &["created_at"]),
+    (
+        "idx_versions_published",
+        "package_versions",
+        &["published_at"],
+    ),
+    (
+        "idx_download_daily_date_count",
+        "download_daily",
+        &["download_date", "count"],
+    ),
 ];
 
 /// Drop (`create = false`) or rebuild (`create = true`) the perf indexes, using
@@ -827,18 +839,14 @@ const PERF_INDEXES: &[(&str, &str, &str)] = &[
 async fn perf_indexes(db: &sema_pkg::db::Db, create: bool) {
     use sea_orm_migration::prelude::*;
     let manager = SchemaManager::new(db);
-    for (name, table, col) in PERF_INDEXES {
+    for (name, table, cols) in PERF_INDEXES {
         if create {
-            let _ = manager
-                .create_index(
-                    Index::create()
-                        .if_not_exists()
-                        .name(*name)
-                        .table(Alias::new(*table))
-                        .col(Alias::new(*col))
-                        .to_owned(),
-                )
-                .await;
+            let mut idx = Index::create();
+            idx.if_not_exists().name(*name).table(Alias::new(*table));
+            for col in *cols {
+                idx.col(Alias::new(*col));
+            }
+            let _ = manager.create_index(idx.to_owned()).await;
         } else {
             let _ = manager
                 .drop_index(
@@ -851,6 +859,25 @@ async fn perf_indexes(db: &sema_pkg::db::Db, create: bool) {
                 .await;
         }
     }
+}
+
+/// Drop (`rebuild = false`) or rebuild (`rebuild = true`) the SQLite FTS index
+/// by running migration m008 down/up. No-op on other backends. Rebuilding
+/// repopulates the FTS index from `packages` in one bulk pass, far cheaper than
+/// the per-row triggers firing across a bulk load.
+async fn defer_fts(db: &sema_pkg::db::Db, rebuild: bool) {
+    use sea_orm::ConnectionTrait;
+    if db.get_database_backend() != sea_orm::DatabaseBackend::Sqlite {
+        return;
+    }
+    use sea_orm_migration::{MigrationTrait, SchemaManager};
+    let manager = SchemaManager::new(db);
+    let migration = sema_pkg::migration::m008_search::Migration;
+    let _ = if rebuild {
+        migration.up(&manager).await
+    } else {
+        migration.down(&manager).await
+    };
 }
 
 /// Insert active models in chunks. Works against a connection or a transaction.
