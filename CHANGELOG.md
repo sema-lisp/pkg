@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to sema-pkg are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+Production-readiness pass: durability, observability, operability, and scale.
+
+New database migrations (m007–m009) run automatically on startup; no manual
+steps required.
+
+### Added
+
+- **S3-compatible blob storage** (Cloudflare R2, MinIO, AWS S3) alongside the
+  filesystem backend, selected by `BLOB_S3_BUCKET` — decouples tarball
+  durability from the compute node for stateless / multi-instance deploys.
+- **Rate limiting** — IP-keyed (GCRA), honouring `X-Forwarded-For` behind a
+  proxy: a generous global tier plus a stricter tier on auth endpoints.
+  Configurable via `RATE_LIMIT_*`, on by default.
+- **Health probes** — `/healthz` (liveness) and `/readyz` (readiness, pings the
+  DB and returns 503 when unreachable).
+- **Graceful shutdown** — drains in-flight requests on SIGINT/SIGTERM.
+- **Observability** (built in, no-op until configured):
+  - OpenTelemetry traces to a JSONL file or OTLP (Jaeger / Grafana Tempo /
+    Collector), with head sampling.
+  - Prometheus metrics at `/metrics` — request RED, process, and application
+    gauges (`METRICS_ENABLED=true`).
+  - `docker-compose.observability.yml` (Collector + Jaeger + Prometheus +
+    Grafana).
+- **Operator CLI** — `sema-pkg admin|package|stats|doctor`: create the first
+  admin, promote/demote/ban/unban, reset-password, revoke-tokens, yank/remove
+  packages, print stats, and a `doctor` deployment smoke test. No manual DB
+  edits.
+- **Engine-portable dev seeder** (`--features seed`) replacing the old
+  `seed.sh` / `seed_stress.py`: realistic data on SQLite/Postgres/MySQL, real
+  logins and blobs, and a `--huge` preset scaling to 10M packages.
+- **Concurrent load-test tool** (`--features loadtest`) covering every endpoint.
+- **Full-text search** — SQLite FTS5 (with prefix indexes), Postgres `pg_trgm`,
+  MySQL `FULLTEXT`; exact-name matches rank first.
+- `DATABASE_MAX_CONNECTIONS` to tune the connection pool.
+
+### Changed
+
+- Multi-engine raw SQL is unified on `?` placeholders (rewritten to `$N` for
+  Postgres) with numeric reads that handle Postgres/MySQL `Decimal`.
+- Observability is a default, always-compiled feature rather than opt-in.
+- `jake` fully replaces the Makefile.
+
+### Performance
+
+- Indexes for the admin and listing hot paths (m007) — the admin user listing
+  went from ~12 s to ~2 ms at 1M packages.
+- Cached admin dashboard stats (single-flight, 30 s TTL) plus a covering index
+  for the rolling download sum (m009) — ~3.7 s to ~80 ms at 10M packages.
+- Homepage recent-packages query rewritten to drop a per-package correlated
+  subquery — ~490 ms to ~4 ms on Postgres.
+- Search made fast at scale (bounded candidate ranking, capped counts, FTS
+  prefix indexes) — a term matching all 10M packages returns in ~1 ms.
+
+### Fixed
+
+- Package removal now reclaims orphaned blobs (dedup-safe: a content-addressed
+  blob is only deleted when no remaining version references it). Yank keeps the
+  blob.
