@@ -16,10 +16,10 @@ task release:
     cargo build --release
 
 @group build
-@desc "fmt --check + clippy -D warnings"
+@desc "fmt --check + clippy -D warnings (incl. the seed binary)"
 task lint:
     cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings
 
 @group build
 @desc "Type-check without codegen"
@@ -28,18 +28,19 @@ task check:
 
 # ── Local development ────────────────────────────────────────
 
-# Start on a fresh, seeded DB. Bumps to the next free port if PORT is taken and
-# points both the server and the seed at it. `jake pkg.dev port=4000`.
+# Seed a fresh DB directly (fast, no running server needed), then start the
+# server on it. Bumps to the next free port if PORT is taken. `jake pkg.dev port=4000`.
 @group dev
-@desc "Start the registry (cargo) on a fresh DB + seed (params: port=3000)"
+@desc "Seed a fresh DB, then start the registry (cargo) (params: port=3000)"
 task dev port="3000": [reset]
     @needs cargo
     start={{port}}; p=$start; \
     while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; \
     base="http://localhost:$p"; \
     [ "$p" = "$start" ] || echo "Port $start is busy — using $p instead."; \
-    echo "Starting sema-pkg on $base — seeding once it's healthy (Ctrl-C to stop)..."; \
-    SEED_MODE=local BASE_URL="$base" bash seed.sh --wait & \
+    echo "Seeding a fresh dev database..."; \
+    BASE_URL="$base" cargo run --features seed --bin seed -- --fresh; \
+    echo "Starting sema-pkg on $base (Ctrl-C to stop)..."; \
     PORT="$p" BASE_URL="$base" cargo run
 
 @group dev
@@ -48,16 +49,19 @@ task run:
     cargo run
 
 @group dev
-@desc "Build + start in Docker on a fresh DB + seed, then tail logs (params: port=3000)"
+@desc "Seed a fresh DB, build + start in Docker, then tail logs (params: port=3000)"
 task docker port="3000": [reset]
     @needs docker
+    @needs cargo
     docker compose down 2>/dev/null || true
     start={{port}}; p=$start; \
     while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; \
     base="http://localhost:$p"; \
     [ "$p" = "$start" ] || echo "Host port $start is busy — using $p instead."; \
+    echo "Seeding ./data before the container opens it..."; \
+    DATABASE_URL="sqlite://data/registry.db?mode=rwc" BLOB_DIR="data/blobs" BASE_URL="$base" \
+      cargo run --features seed --bin seed -- --fresh; \
     PORT="$p" BASE_URL="$base" docker compose up --build -d; \
-    SEED_MODE=docker BASE_URL="$base" bash seed.sh --wait; \
     echo "Registry running in Docker at $base — 'jake pkg.down' to stop it."; \
     PORT="$p" docker compose logs -f
 
@@ -68,15 +72,19 @@ task down:
 
 # ── Seed / database ──────────────────────────────────────────
 
+# Engine-portable seeder (src/bin/seed.rs). Talks to DATABASE_URL directly, so it
+# works on SQLite/Postgres/MySQL and needs no running server. `--fresh` wipes first.
 @group db
-@desc "Seed a registry that is already running (no reset)"
+@desc "Seed realistic dev data into a fresh DB (small set)"
 task seed:
-    BASE_URL="${BASE_URL:-http://localhost:3000}" bash seed.sh
+    @needs cargo
+    cargo run --features seed --bin seed -- --fresh
 
 @group db
-@desc "Seed, then bulk-load synthetic data (local SQLite only)"
-task seed-stress: [seed]
-    python3 seed_stress.py
+@desc "Seed bulk stress data into a fresh DB (~1k users, ~500 packages)"
+task seed-stress:
+    @needs cargo
+    cargo run --features seed --bin seed -- --fresh --large
 
 @group db
 @desc "Delete the local DB + blobs so the next seed is fresh"

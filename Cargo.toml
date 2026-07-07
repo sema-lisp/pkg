@@ -39,6 +39,20 @@ async-trait = "0.1"
 # key extractor; drop the default `tonic`/gRPC feature we don't use.
 tower_governor = { version = "0.8", default-features = false, features = ["axum", "tracing"] }
 
+# Realistic fake data for the dev seeder (`--features seed`). Optional so it
+# never lands in the production binary.
+fake = { version = "2", optional = true }
+
+[features]
+# Compiles the `seed` binary and its fake-data generator.
+seed = ["dep:fake"]
+
+# Engine-portable dev data seeder. Feature-gated so `cargo build` (production)
+# skips it: `cargo run --features seed --bin seed`.
+[[bin]]
+name = "seed"
+required-features = ["seed"]
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

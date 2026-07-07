@@ -27,26 +27,25 @@ Run `jake -l` to list all targets.
 
 ## Local Development
 
-`jake dev` / `jake docker` reset the database, start the server, and run `seed.sh`
-once it is healthy. The seed creates a reproducible demo dataset:
+`jake dev` / `jake docker` seed a fresh database, then start the server on it. The
+seeder (`src/bin/seed.rs`) writes straight to `DATABASE_URL` through the app's own
+entities, so it's **engine-portable** (SQLite/Postgres/MySQL), fast, and needs no
+running server. Seeded users have real password hashes (they can log in), featured
+packages have real downloadable blobs, and it prints a working API token.
 
-- **Users:** `helge` (admin), `kari`, `magnus`, `spambot` (banned). Every seeded user has the password `123123123`. Admin login: `helge` / `123123123`, panel at `/admin`.
-- **Packages:** `sema-http` (3 versions, 1 yanked), `sema-json` (2 versions), `sema-csv`, `sema-xml`, plus spam packages `free-robux` and `bitcoin-miner`.
-- **Reports:** 3 open moderation reports.
+The reproducible demo dataset:
 
-`seed.sh` targets two things at once: it creates users, tokens, packages, and reports
-through the **HTTP API**, and it promotes the first admin directly in **SQLite** (the API
-has no way to create the first admin). `SEED_MODE` controls how that SQLite step runs:
-
-- `SEED_MODE=local` (default) — edits the local `data/registry.db` file.
-- `SEED_MODE=docker` — runs the SQL *inside* the `registry` container so it shares the
-  server's filesystem (this is why the Docker image bundles `sqlite3`).
+- **Users:** `helge` (admin), `kari`, `magnus`, `ingrid`, `olav`, `spambot` (banned), plus realistic bulk accounts. Every seeded user has the password `123123123`. Admin login: `helge` / `123123123`, panel at `/admin`.
+- **Packages:** featured `sema-http`, `sema-json`, `sema-router`, `sema-sql`, `sema-cli`, `sema-async`, `sema-test`, `sema-crypto`, `sema-csv`, `sema-log` (multiple versions, some yanked, READMEs, real blobs) plus dozens of realistic packages.
+- **Downloads, reports, audit log:** populated with a believable distribution.
 
 ```bash
-jake seed                       # seed a registry that is already running (no reset)
-jake seed-stress                # seed + bulk synthetic data (local SQLite only)
-bash seed.sh --wait             # wait for the server, then seed
-SEED_MODE=docker bash seed.sh   # seed a running Docker registry
+jake seed                       # small realistic dev set (wipes + reseeds)
+jake seed-stress                # bulk: ~1k users, ~500 packages
+# Any engine — just point DATABASE_URL at it:
+DATABASE_URL="postgres://sema:sema@localhost:5432/sema" jake seed
+# Or run the binary directly for flags (--fresh, --large):
+cargo run --features seed --bin seed -- --fresh --large
 ```
 
 ## Configuration

@@ -202,5 +202,6 @@ exiting. No special config needed. Give the orchestrator enough grace time — t
 - [ ] Unique `OAUTH_TOKEN_KEY` if GitHub OAuth is enabled (the server refuses to
       boot with the default key otherwise).
 - [ ] Durability for **both** DB and blobs (Litestream+R2, or managed DB + R2).
-- [ ] First admin seeded (`seed.sh` — the first admin can't be created via the API).
+- [ ] First admin created (the first admin can't be created via the API — promote a
+      user directly in the DB, e.g. `UPDATE users SET is_admin = 1 WHERE username = '…'`).
 - [ ] Backups verified by actually restoring once.
