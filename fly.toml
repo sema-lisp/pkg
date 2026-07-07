@@ -19,6 +19,14 @@ primary_region = "ams"
   auto_start_machines = true
   min_machines_running = 0
 
+  # Readiness probe: drains traffic when the DB is unreachable without a restart.
+  [[http_service.checks]]
+    method = "get"
+    path = "/readyz"
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "5s"
+
 [mounts]
   source = "sema_pkg_data"
   destination = "/data"

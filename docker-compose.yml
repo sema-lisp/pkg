@@ -1,6 +1,7 @@
 services:
   registry:
     build: .
+    stop_grace_period: 30s
     ports:
       # Host port is configurable (make dev-docker picks a free one); container stays 3000.
       - "${PORT:-3000}:3000"

@@ -724,6 +724,99 @@ async fn test_healthz() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn test_readyz_reports_ready_with_db_up() {
+    let (app, _dir) = test_app().await;
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert_eq!(body["status"], "ready");
+}
+
+// ── Rate limiting ──
+
+#[tokio::test]
+async fn test_rate_limit_blocks_after_burst() {
+    let (app, _dir) = test_app_rate_limited().await;
+
+    // The auth tier allows a 5-request burst per IP. Fire more than that from a
+    // single client IP (keyed via X-Forwarded-For) and expect a 429 to appear.
+    let mut saw_429 = false;
+    for _ in 0..12 {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.7")
+                    .body(Body::from(
+                        serde_json::json!({"username": "nobody", "password": "x"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if res.status() == StatusCode::TOO_MANY_REQUESTS {
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(saw_429, "expected a 429 after exceeding the auth burst");
+}
+
+#[tokio::test]
+async fn test_rate_limit_is_per_ip() {
+    let (app, _dir) = test_app_rate_limited().await;
+
+    // Exhaust one IP's burst.
+    for _ in 0..12 {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.10")
+                    .body(Body::from(
+                        serde_json::json!({"username": "nobody", "password": "x"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    // A different IP still gets through — the limit is keyed per client.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", "198.51.100.20")
+                .body(Body::from(
+                    serde_json::json!({"username": "nobody", "password": "x"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
 // ── Auth Helpers (unit-level) ──
 
 #[test]
@@ -1205,6 +1298,9 @@ fn test_check_production_secrets_rejects_default_key_with_github() {
         blob_s3_secret_access_key: None,
         max_tarball_bytes: 1024,
         max_dependencies: 64,
+        rate_limit_enabled: false,
+        rate_limit_rps: 20,
+        rate_limit_burst: 40,
     };
 
     // Default key + no GitHub OAuth: allowed (the key is never used)

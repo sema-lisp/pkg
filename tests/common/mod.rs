@@ -18,6 +18,18 @@ pub async fn test_app() -> (Router, TempDir) {
 }
 
 pub async fn test_app_with_state() -> (Router, Arc<AppState>, TempDir) {
+    test_app_inner(false).await
+}
+
+/// Like [`test_app`] but with rate limiting enabled, for exercising the limiter.
+/// Callers must set an `X-Forwarded-For` header so the IP key extractor has a key
+/// (there is no peer address on a `oneshot` request).
+pub async fn test_app_rate_limited() -> (Router, TempDir) {
+    let (app, _state, dir) = test_app_inner(true).await;
+    (app, dir)
+}
+
+async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let blob_dir = dir.path().join("blobs");
     std::fs::create_dir_all(&blob_dir).unwrap();
@@ -57,6 +69,12 @@ pub async fn test_app_with_state() -> (Router, Arc<AppState>, TempDir) {
         blob_s3_secret_access_key: std::env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
         max_tarball_bytes: 10 * 1024 * 1024,
         max_dependencies: 64,
+        // Off by default: the suite hammers endpoints via `oneshot` with no peer
+        // address, which the limiter's IP key extractor requires. Only the
+        // dedicated rate-limit test opts in (and supplies X-Forwarded-For).
+        rate_limit_enabled,
+        rate_limit_rps: 20,
+        rate_limit_burst: 40,
     };
 
     let blobs =

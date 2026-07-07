@@ -35,6 +35,9 @@ toml = "1.1"
 hmac = "0.12"
 comrak = { version = "0.36", default-features = false, features = ["syntect"] }
 async-trait = "0.1"
+# IP-keyed request rate limiting (GCRA). `axum` for ConnectInfo fallback in the
+# key extractor; drop the default `tonic`/gRPC feature we don't use.
+tower_governor = { version = "0.8", default-features = false, features = ["axum", "tracing"] }
 
 [dev-dependencies]
 tempfile = "3"

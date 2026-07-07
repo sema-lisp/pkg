@@ -9,7 +9,9 @@ pub mod db;
 pub mod entity;
 pub mod github;
 pub mod github_sync;
+pub mod health;
 pub mod migration;
+pub mod ratelimit;
 pub mod web;
 
 use axum::{
@@ -27,8 +29,13 @@ pub struct AppState {
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+    let config = &state.config;
+
+    // Health probes, web pages, static assets, and OAuth redirects — never rate
+    // limited (probes and asset fetches would otherwise trip the limiter).
+    let public = Router::new()
+        .route("/healthz", get(health::liveness))
+        .route("/readyz", get(health::readiness))
         // Web pages
         .route("/", get(web::index))
         .route("/search", get(web::search))
@@ -41,10 +48,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/auth/github", get(github::start))
         .route("/auth/github/callback", get(github::callback))
         // Static files
-        .nest_service("/static", ServeDir::new("static"))
-        // Auth API
+        .nest_service("/static", ServeDir::new("static"));
+
+    // Auth endpoints — stricter, fixed rate limit (credential brute-forcing).
+    let auth = Router::new()
         .route("/api/v1/auth/register", post(api::auth::register))
-        .route("/api/v1/auth/login", post(api::auth::login))
+        .route("/api/v1/auth/login", post(api::auth::login));
+    let auth = ratelimit::auth(auth, config);
+
+    // The rest of the API — global rate limit.
+    let api = Router::new()
         .route("/api/v1/auth/logout", post(api::auth::logout))
         // Tokens API
         .route(
@@ -63,7 +76,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             // Axum's default extractor body cap (2 MB) would silently override
             // max_tarball_bytes; allow the configured size plus multipart framing.
             put(api::packages::publish).layer(DefaultBodyLimit::max(
-                state.config.max_tarball_bytes + 1024 * 1024,
+                config.max_tarball_bytes + 1024 * 1024,
             )),
         )
         .route(
@@ -126,6 +139,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(api::admin::dismiss_report),
         )
         // Report submission (any authenticated user)
-        .route("/api/v1/reports", post(api::admin::submit_report))
-        .with_state(state)
+        .route("/api/v1/reports", post(api::admin::submit_report));
+    let api = ratelimit::global(api, config);
+
+    public.merge(auth).merge(api).with_state(state)
 }

@@ -153,19 +153,54 @@ rclone copy ./data/blobs r2:sema-packages
 Then set `BLOB_S3_*` and restart. Reads fall through to whichever backend is
 configured; there's no dual-read, so copy everything before cutting over.
 
+## Health checks
+
+Two probes, split along the Kubernetes convention:
+
+- **`GET /healthz`** — liveness. Cheap, dependency-free, always `200 ok` while the
+  process is up. Wire this to your orchestrator's *restart* probe.
+- **`GET /readyz`** — readiness. Pings the database; `200 {"status":"ready"}` when
+  reachable, `503 {"status":"unavailable"}` when not. Wire this to your load
+  balancer's *should-I-route-traffic* probe so a transient DB outage drains traffic
+  instead of triggering a restart loop.
+
+On Fly, point the `[http_service]` check at `/readyz`. Behind nginx/Caddy, health
+check the upstream on `/readyz`.
+
+## Rate limiting
+
+The registry rate-limits by client IP (GCRA) out of the box — no proxy config
+required. Two tiers: a generous global limit on the API, and a stricter fixed
+limit on `register`/`login` to blunt credential brute-forcing. Health probes,
+static assets, and web pages are never limited. Responses carry `x-ratelimit-*`
+headers, and 429s carry `retry-after`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_ENABLED` | `true` | Set `false` only behind a trusted gateway that already rate-limits. |
+| `RATE_LIMIT_RPS` | `20` | Sustained requests/sec per IP on the general API. |
+| `RATE_LIMIT_BURST` | `40` | Burst allowance per IP before throttling. |
+
+**Behind a reverse proxy**, the limiter keys on `X-Forwarded-For` / `X-Real-IP` /
+`Forwarded`. Make sure your proxy sets one of these (Caddy and Fly do by default;
+for nginx add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) —
+otherwise every request keys to the proxy's IP and shares one bucket.
+
+## Graceful shutdown
+
+On `SIGINT`/`SIGTERM` (what Docker, Kubernetes, systemd, and Fly send on stop) the
+server stops accepting new connections and drains in-flight requests before
+exiting. No special config needed. Give the orchestrator enough grace time — the
+`stop_grace_period` in the compose files is set accordingly.
+
 ## Production checklist
 
 - [ ] `BASE_URL` is your real `https://` origin (enables `Secure` cookies).
 - [ ] Behind a TLS-terminating reverse proxy (Caddy/nginx) or Fly's `force_https`.
+- [ ] Proxy forwards the client IP (`X-Forwarded-For`) so rate limiting keys per client.
+- [ ] Readiness probe wired to `/readyz`, liveness to `/healthz`.
 - [ ] Unique `OAUTH_TOKEN_KEY` if GitHub OAuth is enabled (the server refuses to
       boot with the default key otherwise).
 - [ ] Durability for **both** DB and blobs (Litestream+R2, or managed DB + R2).
 - [ ] First admin seeded (`seed.sh` — the first admin can't be created via the API).
 - [ ] Backups verified by actually restoring once.
-
-### Known gaps
-
-The registry has no built-in request rate limiting, graceful-shutdown drain, or a
-deep `/healthz` (it returns `ok` without checking the DB). Put a rate limiter at
-the proxy/CDN layer for a public instance. See the issue tracker for the hardening
-roadmap.

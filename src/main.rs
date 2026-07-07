@@ -57,8 +57,45 @@ async fn main() {
     println!("sema-pkg listening on http://{local_addr}");
     tracing::info!("sema-pkg listening on http://{}", local_addr);
 
-    if let Err(e) = axum::serve(listener, app).await {
+    // `into_make_service_with_connect_info` surfaces the peer address so the
+    // rate limiter's IP key extractor has a fallback when no forwarded header
+    // is present. `with_graceful_shutdown` drains in-flight requests on
+    // SIGINT/SIGTERM instead of dropping them.
+    let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    if let Err(e) = axum::serve(listener, service)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    {
         eprintln!("Error: server exited unexpectedly: {e}");
         std::process::exit(1);
     }
+    tracing::info!("sema-pkg shut down cleanly");
+}
+
+/// Resolve when the process is asked to stop, so the server can drain in-flight
+/// requests before exiting. Handles Ctrl-C everywhere and SIGTERM on Unix (the
+/// signal Docker/Kubernetes/systemd send on stop).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received — draining in-flight requests");
 }

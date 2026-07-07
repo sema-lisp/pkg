@@ -25,6 +25,12 @@ pub struct Config {
     pub oauth_token_key: String,
     pub max_tarball_bytes: usize,
     pub max_dependencies: usize,
+    // IP-keyed request rate limiting. Enabled by default; the global limit
+    // guards the API surface and a stricter fixed limit guards auth endpoints
+    // (see `ratelimit`). Disable only behind a trusted gateway that limits for us.
+    pub rate_limit_enabled: bool,
+    pub rate_limit_rps: u32,
+    pub rate_limit_burst: u32,
 }
 
 impl Default for Config {
@@ -45,6 +51,9 @@ impl Default for Config {
             oauth_token_key: DEFAULT_OAUTH_TOKEN_KEY.into(),
             max_tarball_bytes: 50 * 1024 * 1024, // 50 MB
             max_dependencies: 64,
+            rate_limit_enabled: true,
+            rate_limit_rps: 20,
+            rate_limit_burst: 40,
         }
     }
 }
@@ -78,6 +87,19 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(64),
+            rate_limit_enabled: env::var("RATE_LIMIT_ENABLED")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true),
+            rate_limit_rps: env::var("RATE_LIMIT_RPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v| v > 0)
+                .unwrap_or(20),
+            rate_limit_burst: env::var("RATE_LIMIT_BURST")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v| v > 0)
+                .unwrap_or(40),
         }
     }
 

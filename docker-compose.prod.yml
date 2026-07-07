@@ -11,6 +11,8 @@ services:
   registry:
     image: ghcr.io/sema-lisp/sema-pkg:latest # or: build: .
     restart: unless-stopped
+    # Give in-flight requests time to drain on SIGTERM before the kill.
+    stop_grace_period: 30s
     ports:
       - "${PORT:-3000}:3000"
     volumes:
