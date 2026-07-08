@@ -7,7 +7,7 @@ test.describe('Publisher — publish packages via API, verify on web UI', () => 
     await publishPackage(request, apiToken, name, '1.0.0');
 
     await authedPage.goto('/');
-    const recent = authedPage.locator('[data-testid="recent-packages"]');
+    const recent = authedPage.getByTestId('recent-packages');
     await expect(recent).toContainText(name);
   });
 
@@ -21,8 +21,8 @@ test.describe('Publisher — publish packages via API, verify on web UI', () => 
     await publishPackage(request, apiToken, name, '1.0.0', description);
 
     await authedPage.goto(`/packages/${name}`);
-    await expect(authedPage.locator('[data-testid="pkg-name"]')).toHaveText(name);
-    await expect(authedPage.locator('[data-testid="versions-table"]')).toContainText('1.0.0');
+    await expect(authedPage.getByTestId('pkg-name')).toHaveText(name);
+    await expect(authedPage.getByTestId('versions-table')).toContainText('1.0.0');
     await expect(authedPage.locator('body')).toContainText(description);
   });
 
@@ -36,7 +36,7 @@ test.describe('Publisher — publish packages via API, verify on web UI', () => 
     await publishPackage(request, apiToken, name, '2.0.0');
 
     await authedPage.goto(`/packages/${name}`);
-    const table = authedPage.locator('[data-testid="versions-table"]');
+    const table = authedPage.getByTestId('versions-table');
     await expect(table).toContainText('1.0.0');
     await expect(table).toContainText('2.0.0');
   });
@@ -50,7 +50,7 @@ test.describe('Publisher — publish packages via API, verify on web UI', () => 
     await publishPackage(request, apiToken, name, '1.0.0');
 
     await authedPage.goto('/account');
-    const section = authedPage.locator('[data-testid="section-packages"]');
+    const section = authedPage.getByTestId('section-packages');
     await expect(section).toContainText(name);
   });
 
@@ -60,7 +60,7 @@ test.describe('Publisher — publish packages via API, verify on web UI', () => 
     await yankVersion(request, apiToken, name, '1.0.0');
 
     await authedPage.goto(`/packages/${name}`);
-    const table = authedPage.locator('[data-testid="versions-table"]');
+    const table = authedPage.getByTestId('versions-table');
     await expect(table).toContainText('yanked');
   });
 });

@@ -43,8 +43,8 @@ test.describe('Admin Panel', () => {
     await page.goto('/admin');
     await expect(page).toHaveURL(/\/admin/);
     // Wait for stats grid to be visible — proves dashboard tab loaded with data
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
-    await expect(page.locator('.stats-grid')).toBeVisible();
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible();
   });
 
   // ────────────────────────────────────────────
@@ -97,7 +97,7 @@ test.describe('Admin Panel', () => {
 
     // Navigate and wait for stats to render
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Stat values should be visible and numeric
     const totalUsers = page.getByTestId('stat-users');
@@ -129,7 +129,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Switch to Users tab and wait for table rows to appear
     await page.getByTestId('nav-users').click();
@@ -177,7 +177,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Navigate to Users tab and wait for table to load
     await page.getByTestId('nav-users').click();
@@ -243,7 +243,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Navigate to Packages tab and wait for table rows
     await page.getByTestId('nav-packages').click();
@@ -291,7 +291,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Navigate to Packages tab and wait for table rows
     await page.getByTestId('nav-packages').click();
@@ -354,7 +354,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Switch to Audit Log tab
     await page.getByTestId('nav-audit').click();
@@ -367,7 +367,7 @@ test.describe('Admin Panel', () => {
     ).toBeVisible({ timeout: 10000 });
 
     // Wait for at least one entry to render
-    const entries = page.locator('[data-testid="audit-entry"]:visible');
+    const entries = page.getByTestId('audit-entry').filter({ visible: true });
     await expect(entries.first()).toBeVisible({ timeout: 10000 });
     const count = await entries.count();
     expect(count).toBeGreaterThanOrEqual(1);
@@ -407,7 +407,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Switch to Reports tab and wait for report content to appear
     await page.getByTestId('nav-reports').click();
@@ -455,7 +455,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Switch to Reports tab and wait for report content to appear
     await page.getByTestId('nav-reports').click();
@@ -542,7 +542,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Navigate to Users tab
     await page.getByTestId('nav-users').click();
@@ -657,7 +657,7 @@ test.describe('Admin Panel', () => {
 
     await api.setSession(page.context(), adminSession);
     await page.goto('/admin');
-    await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
+    await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
     // Navigate to Users tab
     await page.getByTestId('nav-users').click();
