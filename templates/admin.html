@@ -448,11 +448,11 @@
   <nav class="sidebar">
     <div class="sidebar-section">
       <div class="sidebar-label">Overview</div>
-      <div class="sidebar-link" :class="tab === 'dashboard' && 'active'" @click="switchTab('dashboard')">
+      <div class="sidebar-link" data-testid="nav-dashboard" :class="tab === 'dashboard' && 'active'" @click="switchTab('dashboard')">
         <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
         Dashboard
       </div>
-      <div class="sidebar-link" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
+      <div class="sidebar-link" data-testid="nav-audit" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h9v1H2V9zm0 3h7v1H2v-1z"/></svg>
         Audit Log
         <span class="sidebar-count" x-text="auditLog.length || ''"></span>
@@ -460,12 +460,12 @@
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Manage</div>
-      <div class="sidebar-link" :class="tab === 'users' && 'active'" @click="switchTab('users')">
+      <div class="sidebar-link" data-testid="nav-users" :class="tab === 'users' && 'active'" @click="switchTab('users')">
         <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.5-5 6-5s6 2 6 5H2z"/></svg>
         Users
         <span class="sidebar-count" x-text="stats.total_users || ''"></span>
       </div>
-      <div class="sidebar-link" :class="tab === 'packages' && 'active'" @click="switchTab('packages')">
+      <div class="sidebar-link" data-testid="nav-packages" :class="tab === 'packages' && 'active'" @click="switchTab('packages')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L1 4.5v7L8 15l7-3.5v-7L8 1zM8 8L2 5l6-3 6 3-6 3z"/></svg>
         Packages
         <span class="sidebar-count" x-text="stats.total_packages || ''"></span>
@@ -473,7 +473,7 @@
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">System</div>
-      <div class="sidebar-link" :class="tab === 'reports' && 'active'" @click="switchTab('reports')">
+      <div class="sidebar-link" data-testid="nav-reports" :class="tab === 'reports' && 'active'" @click="switchTab('reports')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.5 4h1v4h-1V5zm0 5h1v1h-1v-1z"/></svg>
         Reports
         <span class="sidebar-count" style="color:var(--error);" x-text="stats.open_reports || ''"></span>
@@ -486,32 +486,32 @@
 
     <!-- Dashboard -->
     <div x-show="tab === 'dashboard'" x-cloak>
-      <h1 class="page-title">Dashboard</h1>
+      <h1 class="page-title" data-testid="page-title">Dashboard</h1>
       <p class="page-desc">Registry overview and recent activity</p>
 
       <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-label">Total Users</div>
-          <div class="stat-value" x-text="stats.total_users"></div>
+          <div class="stat-value" data-testid="stat-users" x-text="stats.total_users"></div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Packages</div>
-          <div class="stat-value" x-text="stats.total_packages"></div>
+          <div class="stat-value" data-testid="stat-packages" x-text="stats.total_packages"></div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Banned Users</div>
-          <div class="stat-value danger" x-text="stats.banned_users"></div>
+          <div class="stat-value danger" data-testid="stat-banned" x-text="stats.banned_users"></div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Open Reports</div>
-          <div class="stat-value" :class="stats.open_reports > 0 ? 'danger' : ''" x-text="stats.open_reports"></div>
+          <div class="stat-value" data-testid="stat-reports" :class="stats.open_reports > 0 ? 'danger' : ''" x-text="stats.open_reports"></div>
         </div>
       </div>
 
       <div style="font-size:0.6rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim); margin-bottom:0.75rem;">Recent Activity</div>
       <div>
         <template x-for="entry in auditLog.slice(0, 8)" :key="entry.id">
-          <div class="audit-entry">
+          <div class="audit-entry" data-testid="audit-entry">
             <span class="audit-time" :title="entry.created_at" x-text="timeAgo(entry.created_at)"></span>
             <span class="audit-actor" x-text="entry.actor"></span>
             <span class="audit-action" x-html="entry.action"></span>
@@ -525,11 +525,11 @@
 
     <!-- Users -->
     <div x-show="tab === 'users'" x-cloak>
-      <h1 class="page-title">Users</h1>
+      <h1 class="page-title" data-testid="page-title">Users</h1>
       <p class="page-desc">Manage registered accounts</p>
 
       <div class="toolbar">
-        <input type="text" class="toolbar-search" placeholder="Search users by name or email..." x-model="userSearch" @input.debounce.300ms="userPage = 1; loadUsers()">
+        <input type="text" class="toolbar-search" data-testid="users-search" placeholder="Search users by name or email..." x-model="userSearch" @input.debounce.300ms="userPage = 1; loadUsers()">
         <select class="toolbar-filter" x-model="userFilter" @change="userPage = 1; loadUsers()">
           <option value="all">All users</option>
           <option value="active">Active</option>
@@ -537,7 +537,7 @@
         </select>
       </div>
 
-      <table class="admin-table">
+      <table class="admin-table" data-testid="users-table">
         <thead>
           <tr>
             <th>Username</th>
@@ -551,7 +551,7 @@
         </thead>
         <tbody>
           <template x-for="user in users" :key="user.id">
-            <tr>
+            <tr data-testid="admin-row">
               <td style="color:var(--gold);" x-text="user.username"></td>
               <td style="color:var(--text-dim);" x-text="user.email"></td>
               <td x-text="user.package_count"></td>
@@ -560,16 +560,16 @@
                 <template x-if="!user.github_login"><span style="color:var(--text-dim);">&mdash;</span></template>
               </td>
               <td>
-                <span class="status" :class="user.banned ? 'status-banned' : 'status-active'" x-text="user.banned ? 'Banned' : 'Active'"></span>
+                <span class="status" :class="user.banned ? 'status-banned' : 'status-active'" :data-testid="user.banned ? 'status-banned' : 'status-active'" x-text="user.banned ? 'Banned' : 'Active'"></span>
               </td>
               <td style="color:var(--text-dim); font-size:0.68rem;"><span :title="user.created_at" x-text="timeAgo(user.created_at)"></span></td>
               <td class="col-actions">
-                <button class="action-btn action-btn-ghost" @click="openUserDrawer(user)">View</button>
+                <button class="action-btn action-btn-ghost" data-testid="action-view" @click="openUserDrawer(user)">View</button>
                 <template x-if="!user.banned">
-                  <button class="action-btn action-btn-danger" @click="confirmAction('ban', user)">Ban</button>
+                  <button class="action-btn action-btn-danger" data-testid="action-ban" @click="confirmAction('ban', user)">Ban</button>
                 </template>
                 <template x-if="user.banned">
-                  <button class="action-btn action-btn-success" @click="confirmAction('unban', user)">Unban</button>
+                  <button class="action-btn action-btn-success" data-testid="action-unban" @click="confirmAction('unban', user)">Unban</button>
                 </template>
               </td>
             </tr>
@@ -592,11 +592,11 @@
 
     <!-- Packages -->
     <div x-show="tab === 'packages'" x-cloak>
-      <h1 class="page-title">Packages</h1>
+      <h1 class="page-title" data-testid="page-title">Packages</h1>
       <p class="page-desc">Manage published packages and versions</p>
 
       <div class="toolbar">
-        <input type="text" class="toolbar-search" placeholder="Search packages..." x-model="pkgSearch" @input.debounce.300ms="pkgPage = 1; loadPackages()">
+        <input type="text" class="toolbar-search" data-testid="packages-search" placeholder="Search packages..." x-model="pkgSearch" @input.debounce.300ms="pkgPage = 1; loadPackages()">
         <select class="toolbar-filter" x-model="pkgFilter" @change="pkgPage = 1; loadPackages()">
           <option value="all">All packages</option>
           <option value="upload">Upload-sourced</option>
@@ -605,7 +605,7 @@
         </select>
       </div>
 
-      <table class="admin-table">
+      <table class="admin-table" data-testid="packages-table">
         <thead>
           <tr>
             <th>Name</th>
@@ -619,7 +619,7 @@
         </thead>
         <tbody>
           <template x-for="pkg in packages" :key="pkg.name">
-            <tr>
+            <tr data-testid="admin-row">
               <td>
                 <a :href="'/packages/' + pkg.name" style="color:var(--gold); text-decoration:none;" x-text="pkg.name"></a>
                 <span style="font-size:0.6rem; color:var(--text-dim); margin-left:0.3rem;" x-text="pkg.latest_version ? ('v' + pkg.latest_version) : ''"></span>
@@ -633,9 +633,9 @@
               <td style="color:var(--text-dim);" x-text="(pkg.downloads || 0).toLocaleString()"></td>
               <td style="color:var(--text-dim); font-size:0.68rem;"><span :title="pkg.created_at" x-text="timeAgo(pkg.created_at)"></span></td>
               <td class="col-actions">
-                <button class="action-btn action-btn-ghost" @click="openPkgDrawer(pkg)">View</button>
-                <button class="action-btn action-btn-warn" @click="confirmAction('yank-all', pkg)">Yank All</button>
-                <button class="action-btn action-btn-danger" @click="confirmAction('remove', pkg)">Remove</button>
+                <button class="action-btn action-btn-ghost" data-testid="action-view" @click="openPkgDrawer(pkg)">View</button>
+                <button class="action-btn action-btn-warn" data-testid="action-yank" @click="confirmAction('yank-all', pkg)">Yank All</button>
+                <button class="action-btn action-btn-danger" data-testid="action-remove" @click="confirmAction('remove', pkg)">Remove</button>
               </td>
             </tr>
           </template>
@@ -657,11 +657,11 @@
 
     <!-- Audit Log -->
     <div x-show="tab === 'audit'" x-cloak>
-      <h1 class="page-title">Audit Log</h1>
+      <h1 class="page-title" data-testid="page-title">Audit Log</h1>
       <p class="page-desc">All administrative and system actions</p>
 
       <div class="toolbar">
-        <input type="text" class="toolbar-search" placeholder="Filter events..." x-model="auditSearch" @input.debounce.300ms="auditPage = 1; loadAudit()">
+        <input type="text" class="toolbar-search" data-testid="audit-search" placeholder="Filter events..." x-model="auditSearch" @input.debounce.300ms="auditPage = 1; loadAudit()">
         <select class="toolbar-filter" x-model="auditFilter" @change="auditPage = 1; loadAudit()">
           <option value="all">All events</option>
           <option value="admin">Admin actions</option>
@@ -673,7 +673,7 @@
 
       <div>
         <template x-for="entry in auditLog" :key="entry.id">
-          <div class="audit-entry">
+          <div class="audit-entry" data-testid="audit-entry">
             <span class="audit-time" :title="entry.created_at" x-text="timeAgo(entry.created_at)"></span>
             <span class="audit-actor" x-text="entry.actor"></span>
             <span class="audit-action" x-html="entry.action"></span>
@@ -695,13 +695,13 @@
     </div>
 
     <!-- Reports -->
-    <div x-show="tab === 'reports'" x-cloak>
-      <h1 class="page-title">Reports</h1>
+    <div x-show="tab === 'reports'" x-cloak data-testid="reports-section">
+      <h1 class="page-title" data-testid="page-title">Reports</h1>
       <p class="page-desc">User-submitted reports requiring review</p>
 
       <div style="display:flex; flex-direction:column; gap:0.75rem;">
         <template x-for="report in reports" :key="report.id">
-          <div style="padding:1rem 1.2rem; background:var(--bg-raised); border:1px solid var(--border); border-radius:6px;">
+          <div data-testid="report-card" style="padding:1rem 1.2rem; background:var(--bg-raised); border:1px solid var(--border); border-radius:6px;">
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
               <div style="flex:1; min-width:0;">
                 <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
@@ -715,8 +715,8 @@
                 </div>
               </div>
               <div style="display:flex; gap:0.4rem; flex-shrink:0; padding-top:0.1rem;">
-                <button class="action-btn action-btn-danger" @click="confirmAction('remove', report)">Act</button>
-                <button class="action-btn action-btn-ghost" @click="dismissReport(report)">Dismiss</button>
+                <button class="action-btn action-btn-danger" data-testid="action-act" @click="confirmAction('remove', report)">Act</button>
+                <button class="action-btn action-btn-ghost" data-testid="action-dismiss" @click="dismissReport(report)">Dismiss</button>
               </div>
             </div>
           </div>
@@ -773,7 +773,7 @@
           <template x-if="userDrawer.banned">
             <button class="action-btn action-btn-success" style="padding:0.4rem 0.8rem;" @click="confirmAction('unban', userDrawer)">Unban User</button>
           </template>
-          <button class="action-btn action-btn-warn" style="padding:0.4rem 0.8rem;" @click="revokeTokens(userDrawer)">Revoke All Tokens</button>
+          <button class="action-btn action-btn-warn" data-testid="revoke-all-tokens" style="padding:0.4rem 0.8rem;" @click="revokeTokens(userDrawer)">Revoke All Tokens</button>
           <button class="action-btn action-btn-ghost" style="padding:0.4rem 0.8rem;">Transfer Packages</button>
         </div>
       </div>
@@ -850,19 +850,19 @@
   <template x-if="confirm">
     <div>
       <div class="drawer-overlay" @click="confirm = null" style="z-index:199;"></div>
-      <div class="confirm-dialog">
-        <div class="confirm-title" x-text="confirm.title"></div>
+      <div class="confirm-dialog" data-testid="confirm-dialog">
+        <div class="confirm-title" data-testid="confirm-title" x-text="confirm.title"></div>
         <div class="confirm-body" x-html="confirm.body"></div>
         <div class="confirm-actions">
-          <button class="action-btn action-btn-ghost" style="padding:0.4rem 0.8rem;" @click="confirm = null">Cancel</button>
-          <button class="action-btn" :class="confirm.btnClass" style="padding:0.4rem 0.8rem;" @click="executeAction()" x-text="confirm.btnText"></button>
+          <button class="action-btn action-btn-ghost" data-testid="confirm-cancel" style="padding:0.4rem 0.8rem;" @click="confirm = null">Cancel</button>
+          <button class="action-btn" data-testid="confirm-accept" :class="confirm.btnClass" style="padding:0.4rem 0.8rem;" @click="executeAction()" x-text="confirm.btnText"></button>
         </div>
       </div>
     </div>
   </template>
 
   <!-- Toast -->
-  <div x-show="toast" x-transition class="toast" :class="toastType === 'success' ? 'toast-success' : 'toast-error'" x-text="toast" x-cloak></div>
+  <div x-show="toast" x-transition class="toast" :class="toastType === 'success' ? 'toast-success' : 'toast-error'" :data-testid="toastType === 'success' ? 'toast-success' : 'toast-error'" x-text="toast" x-cloak></div>
 
 </div>
 {% endblock %}

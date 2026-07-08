@@ -100,13 +100,13 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Stat values should be visible and numeric
-    const statValues = page.locator('.stat-value');
-    await expect(statValues.first()).toBeVisible({ timeout: 10000 });
+    const totalUsers = page.getByTestId('stat-users');
+    await expect(totalUsers).toBeVisible({ timeout: 10000 });
     // Total users should be at least 3 (admin + 2 users)
-    const totalUsersText = await statValues.nth(0).textContent();
+    const totalUsersText = await totalUsers.textContent();
     expect(parseInt(totalUsersText ?? '0', 10)).toBeGreaterThanOrEqual(3);
     // Packages should be at least 1
-    const totalPkgsText = await statValues.nth(1).textContent();
+    const totalPkgsText = await page.getByTestId('stat-packages').textContent();
     expect(parseInt(totalPkgsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
   });
 
@@ -132,23 +132,32 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Switch to Users tab and wait for table rows to appear
-    await page.locator('.sidebar-link', { hasText: 'Users' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-users').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Type in search box
-    const searchInput = page.locator('.toolbar-search').first();
+    const searchInput = page.getByTestId('users-search');
     await expect(searchInput).toBeVisible({ timeout: 10000 });
 
     await searchInput.fill(alice);
     // Wait for debounce + API response + re-render
     await page.waitForTimeout(1000);
-    await page.waitForSelector(`.admin-table tbody td:has-text("${alice}")`, { timeout: 10000 });
+    const usersTable = page.getByTestId('users-table');
+    await usersTable
+      .getByTestId('admin-row')
+      .filter({ hasText: alice })
+      .first()
+      .waitFor({ timeout: 10000 });
 
     // Alice should be visible, bob should not
-    const visibleRows = page.locator('.admin-table tbody tr:visible');
+    const visibleRows = usersTable.getByTestId('admin-row');
     await expect(visibleRows.first()).toBeVisible();
-    await expect(page.locator(`.admin-table td:has-text("${alice}")`).first()).toBeVisible();
-    await expect(page.locator(`.admin-table td:has-text("${bob}")`)).toHaveCount(0);
+    await expect(
+      usersTable.getByTestId('admin-row').filter({ hasText: alice }).first(),
+    ).toBeVisible();
+    await expect(
+      usersTable.getByTestId('admin-row').filter({ hasText: bob }),
+    ).toHaveCount(0);
   });
 
   // ────────────────────────────────────────────
@@ -171,41 +180,47 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Navigate to Users tab and wait for table to load
-    await page.locator('.sidebar-link', { hasText: 'Users' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-users').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Search for the bannable user to narrow down the list
-    const searchInput = page.locator(
-      'div[x-show*="users"] .toolbar-search',
-    );
+    const searchInput = page.getByTestId('users-search');
     await searchInput.fill(bannable);
-    await page.waitForSelector(`.admin-table tbody tr:has-text("${bannable}")`, { timeout: 10000 });
+    await page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: bannable })
+      .first()
+      .waitFor({ timeout: 10000 });
 
     // Find the row containing the bannable user and click Ban
-    const userRow = page.locator('.admin-table tbody tr', {
-      hasText: bannable,
-    });
+    const userRow = page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: bannable });
     await expect(userRow).toBeVisible();
 
     // Click Ban — this opens the confirm dialog
-    await userRow.locator('button', { hasText: 'Ban' }).click();
+    await userRow.getByTestId('action-ban').click();
 
     // Confirm dialog should appear
-    await expect(page.locator('.confirm-dialog')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.confirm-title')).toHaveText('Ban User');
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('confirm-title')).toHaveText('Ban User');
 
     // Click the confirm button and wait for toast
-    await page.locator('.confirm-dialog .action-btn-danger').click();
+    await page.getByTestId('confirm-accept').click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
-    const toastText = await page.locator('.toast-success').textContent();
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
+    const toastText = await page.getByTestId('toast-success').textContent();
     expect(toastText).toContain('Banned');
 
     // After the action the user should show as Banned in the table
     const statusBadge = page
-      .locator('.admin-table tbody tr', { hasText: bannable })
-      .locator('.status-banned');
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: bannable })
+      .getByTestId('status-banned');
     await expect(statusBadge).toBeVisible({ timeout: 10000 });
   });
 
@@ -231,29 +246,30 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Navigate to Packages tab and wait for table rows
-    await page.locator('.sidebar-link', { hasText: 'Packages' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-packages').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Find the package row
-    const pkgRow = page.locator('.admin-table tbody tr', {
-      hasText: pkgName,
-    });
+    const pkgRow = page
+      .getByTestId('packages-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: pkgName });
     await expect(pkgRow).toBeVisible();
 
     // Click Yank All — opens confirm dialog
-    await pkgRow.locator('button', { hasText: 'Yank All' }).click();
+    await pkgRow.getByTestId('action-yank').click();
 
-    await expect(page.locator('.confirm-dialog')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.confirm-title')).toHaveText(
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('confirm-title')).toHaveText(
       'Yank All Versions',
     );
 
     // Confirm and wait for toast
-    await page.locator('.confirm-dialog .action-btn-warn').click();
+    await page.getByTestId('confirm-accept').click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
-    const toastText = await page.locator('.toast-success').textContent();
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
+    const toastText = await page.getByTestId('toast-success').textContent();
     expect(toastText).toContain('Yanked');
   });
 
@@ -278,32 +294,36 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Navigate to Packages tab and wait for table rows
-    await page.locator('.sidebar-link', { hasText: 'Packages' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-packages').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Find the package row
-    const pkgRow = page.locator('.admin-table tbody tr', {
-      hasText: pkgName,
-    });
+    const pkgRow = page
+      .getByTestId('packages-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: pkgName });
     await expect(pkgRow).toBeVisible();
 
     // Click Remove — opens confirm dialog
-    await pkgRow.locator('button', { hasText: 'Remove' }).click();
+    await pkgRow.getByTestId('action-remove').click();
 
-    await expect(page.locator('.confirm-dialog')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.confirm-title')).toHaveText('Remove Package');
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('confirm-title')).toHaveText('Remove Package');
 
     // Confirm and wait for toast
-    await page.locator('.confirm-dialog .action-btn-danger').click();
+    await page.getByTestId('confirm-accept').click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
-    const toastText = await page.locator('.toast-success').textContent();
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
+    const toastText = await page.getByTestId('toast-success').textContent();
     expect(toastText).toContain('Removed');
 
     // Package should no longer appear in the list after removal
     await expect(
-      page.locator('.admin-table tbody tr', { hasText: pkgName }),
+      page
+        .getByTestId('packages-table')
+        .getByTestId('admin-row')
+        .filter({ hasText: pkgName }),
     ).toHaveCount(0, { timeout: 10000 });
   });
 
@@ -337,15 +357,17 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Switch to Audit Log tab
-    await page.locator('.sidebar-link', { hasText: 'Audit Log' }).click();
+    await page.getByTestId('nav-audit').click();
     // Wait for tab to switch and data to load
     await page.waitForTimeout(1000);
 
     // Audit entries should be visible — use the page title as proof tab switched
-    await expect(page.locator('h1.page-title', { hasText: 'Audit Log' })).toBeVisible({ timeout: 10000 });
+    await expect(
+      page.getByTestId('page-title').filter({ hasText: 'Audit Log' }),
+    ).toBeVisible({ timeout: 10000 });
 
     // Wait for at least one entry to render
-    const entries = page.locator('.audit-entry:visible');
+    const entries = page.locator('[data-testid="audit-entry"]:visible');
     await expect(entries.first()).toBeVisible({ timeout: 10000 });
     const count = await entries.count();
     expect(count).toBeGreaterThanOrEqual(1);
@@ -388,12 +410,12 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Switch to Reports tab and wait for report content to appear
-    await page.locator('.sidebar-link', { hasText: 'Reports' }).click();
+    await page.getByTestId('nav-reports').click();
 
     // The report should be visible
-    const reportsSection = page.locator('div[x-show*="reports"]');
+    const reportsSection = page.getByTestId('reports-section');
     await expect(
-      reportsSection.locator(`text=${targetPkg}`),
+      reportsSection.getByTestId('report-card').filter({ hasText: targetPkg }),
     ).toBeVisible({ timeout: 10000 });
     const sectionText = await reportsSection.textContent();
     expect(sectionText).toContain('This package is spam');
@@ -436,31 +458,31 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Switch to Reports tab and wait for report content to appear
-    await page.locator('.sidebar-link', { hasText: 'Reports' }).click();
+    await page.getByTestId('nav-reports').click();
 
     // Find the report and wait for it to be visible
-    const reportsSection = page.locator('div[x-show*="reports"]');
+    const reportsSection = page.getByTestId('reports-section');
     await expect(
-      reportsSection.locator(`text=${targetPkg}`),
+      reportsSection.getByTestId('report-card').filter({ hasText: targetPkg }),
     ).toBeVisible({ timeout: 10000 });
 
     // The Dismiss button is next to the report
     await page
-      .locator('div[x-show*="reports"]')
-      .locator('button', { hasText: 'Dismiss' })
+      .getByTestId('reports-section')
+      .getByTestId('action-dismiss')
       .first()
       .click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
-    const toastText = await page.locator('.toast-success').textContent();
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
+    const toastText = await page.getByTestId('toast-success').textContent();
     expect(toastText).toContain('Dismissed');
 
     // After dismiss, report should be gone from open list
     // Wait a beat for Alpine to re-render
     await page.waitForTimeout(500);
     const remainingText = await page
-      .locator('div[x-show*="reports"]')
+      .getByTestId('reports-section')
       .textContent();
     expect(remainingText).not.toContain(targetPkg);
   });
@@ -523,38 +545,47 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Navigate to Users tab
-    await page.locator('.sidebar-link', { hasText: 'Users' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-users').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Search for the target user
-    const searchInput = page.locator(
-      'div[x-show*="users"] .toolbar-search',
-    );
+    const searchInput = page.getByTestId('users-search');
     await searchInput.fill(target);
-    await page.waitForSelector(`.admin-table tbody tr:has-text("${target}")`, { timeout: 10000 });
+    await page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: target })
+      .first()
+      .waitFor({ timeout: 10000 });
 
     // Verify the user shows "Banned" badge
-    const userRow = page.locator('.admin-table tbody tr', { hasText: target });
+    const userRow = page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: target });
     await expect(userRow).toBeVisible();
-    await expect(userRow.locator('.status-banned')).toBeVisible({ timeout: 10000 });
+    await expect(userRow.getByTestId('status-banned')).toBeVisible({ timeout: 10000 });
 
     // Click "Unban" — opens confirm dialog
-    await userRow.locator('button', { hasText: 'Unban' }).click();
+    await userRow.getByTestId('action-unban').click();
 
     // Confirm dialog should appear
-    await expect(page.locator('.confirm-dialog')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible({ timeout: 10000 });
 
     // Click the confirm button inside the dialog
-    const confirmBtn = page.locator('.confirm-dialog button', { hasText: /Unban|Confirm|Yes/ });
+    const confirmBtn = page.getByTestId('confirm-accept');
     await confirmBtn.click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
 
     // User should no longer show "Banned" badge
     await page.waitForTimeout(500);
-    const updatedRow = page.locator('.admin-table tbody tr', { hasText: target });
-    await expect(updatedRow.locator('.status-banned')).toHaveCount(0, { timeout: 10000 });
+    const updatedRow = page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: target });
+    await expect(updatedRow.getByTestId('status-banned')).toHaveCount(0, { timeout: 10000 });
   });
 
   // ────────────────────────────────────────────
@@ -629,25 +660,31 @@ test.describe('Admin Panel', () => {
     await page.waitForSelector('.stats-grid', { state: 'visible', timeout: 15000 });
 
     // Navigate to Users tab
-    await page.locator('.sidebar-link', { hasText: 'Users' }).click();
-    await page.waitForSelector('.admin-table tbody tr', { timeout: 10000 });
+    await page.getByTestId('nav-users').click();
+    await page.getByTestId('admin-row').first().waitFor({ timeout: 10000 });
 
     // Search for the target user
-    const searchInput = page.locator(
-      'div[x-show*="users"] .toolbar-search',
-    );
+    const searchInput = page.getByTestId('users-search');
     await searchInput.fill(target);
-    await page.waitForSelector(`.admin-table tbody tr:has-text("${target}")`, { timeout: 10000 });
+    await page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: target })
+      .first()
+      .waitFor({ timeout: 10000 });
 
     // Click "View" on the target user to open the drawer
-    const userRow = page.locator('.admin-table tbody tr', { hasText: target });
+    const userRow = page
+      .getByTestId('users-table')
+      .getByTestId('admin-row')
+      .filter({ hasText: target });
     await expect(userRow).toBeVisible();
-    await userRow.locator('button', { hasText: 'View' }).click();
+    await userRow.getByTestId('action-view').click();
 
     // Wait for drawer to open and click "Revoke All Tokens"
-    await page.locator('button', { hasText: 'Revoke All Tokens' }).click();
+    await page.getByTestId('revoke-all-tokens').click();
 
     // Toast should show success
-    await expect(page.locator('.toast-success')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
   });
 });

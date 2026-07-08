@@ -144,7 +144,7 @@
         <button class="auth-tab" :class="tab === 'signup' ? 'active' : ''" @click="tab = 'signup'" data-testid="tab-register">Create Account</button>
       </div>
 
-      <div x-show="error" style="padding:0.5rem 0.75rem; margin-bottom:1rem; font-size:0.72rem; color:var(--error); border:1px solid rgba(200,85,85,0.3); border-radius:4px;" x-text="error" data-testid="auth-error"></div>
+      <div x-show="error" x-cloak style="padding:0.5rem 0.75rem; margin-bottom:1rem; font-size:0.72rem; color:var(--error); border:1px solid rgba(200,85,85,0.3); border-radius:4px;" x-text="error" data-testid="auth-error"></div>
 
       <div x-show="tab === 'signin'">
         <form class="auth-form" @submit.prevent="
@@ -159,12 +159,14 @@
           if (res.ok) { window.location = '/account'; } else { error = data.error; }
         ">
           <div class="form-group">
-            <label class="form-label">Username or Email</label>
-            <input type="text" class="form-input" placeholder="username" x-ref="loginUser" required data-testid="login-username">
+            <sema-field label="Username or Email" style="display:block;">
+              <sema-input type="text" placeholder="username" x-ref="loginUser" required data-testid="login-username"></sema-input>
+            </sema-field>
           </div>
           <div class="form-group">
-            <label class="form-label">Password</label>
-            <input type="password" class="form-input" placeholder="••••••••" x-ref="loginPass" required data-testid="login-password">
+            <sema-field label="Password" style="display:block;">
+              <sema-input type="password" placeholder="••••••••" x-ref="loginPass" required data-testid="login-password"></sema-input>
+            </sema-field>
           </div>
           <button type="submit" class="btn btn-primary" :disabled="loading" x-text="loading ? 'Signing in…' : 'Sign In'" data-testid="login-submit"></button>
         </form>
@@ -191,16 +193,19 @@
           if (res.ok) { window.location = '/account'; } else { error = data.error; }
         ">
           <div class="form-group">
-            <label class="form-label">Username</label>
-            <input type="text" class="form-input" placeholder="username" x-ref="regUser" required data-testid="reg-username">
+            <sema-field label="Username" style="display:block;">
+              <sema-input type="text" placeholder="username" x-ref="regUser" required data-testid="reg-username"></sema-input>
+            </sema-field>
           </div>
           <div class="form-group">
-            <label class="form-label">Email</label>
-            <input type="email" class="form-input" placeholder="you@example.com" x-ref="regEmail" required data-testid="reg-email">
+            <sema-field label="Email" style="display:block;">
+              <sema-input type="email" placeholder="you@example.com" x-ref="regEmail" required data-testid="reg-email"></sema-input>
+            </sema-field>
           </div>
           <div class="form-group">
-            <label class="form-label">Password</label>
-            <input type="password" class="form-input" placeholder="••••••••" x-ref="regPass" required data-testid="reg-password">
+            <sema-field label="Password" style="display:block;">
+              <sema-input type="password" placeholder="••••••••" x-ref="regPass" required data-testid="reg-password"></sema-input>
+            </sema-field>
           </div>
           <button type="submit" class="btn btn-primary" :disabled="loading" x-text="loading ? 'Creating…' : 'Create Account'" data-testid="reg-submit"></button>
         </form>

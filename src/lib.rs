@@ -174,6 +174,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(auth)
         .merge(read)
         .merge(api)
+        .fallback(web::fallback)
         // Prometheus RED metrics per matched route (runs inside routing, so the
         // route template is available for a bounded-cardinality label). A no-op
         // until a metrics recorder is installed.

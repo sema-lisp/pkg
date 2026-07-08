@@ -4,7 +4,7 @@ test.describe('Tokens — API token CRUD lifecycle', () => {
   test('generate token shows token value', async ({ authedPage }) => {
     await authedPage.goto('/account');
 
-    await authedPage.locator('[data-testid="token-name-input"]').fill('my-token');
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill('my-token');
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
 
     const display = authedPage.locator('[data-testid="token-display"]');
@@ -16,7 +16,7 @@ test.describe('Tokens — API token CRUD lifecycle', () => {
     await authedPage.goto('/account');
 
     const tokenName = `list-token-${Date.now()}`;
-    await authedPage.locator('[data-testid="token-name-input"]').fill(tokenName);
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill(tokenName);
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
 
     await expect(authedPage.locator('[data-testid="token-display"]')).toBeVisible();
@@ -31,11 +31,11 @@ test.describe('Tokens — API token CRUD lifecycle', () => {
     const name1 = `multi-a-${Date.now()}`;
     const name2 = `multi-b-${Date.now()}`;
 
-    await authedPage.locator('[data-testid="token-name-input"]').fill(name1);
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill(name1);
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
     await expect(authedPage.locator('[data-testid="token-display"]')).toBeVisible();
 
-    await authedPage.locator('[data-testid="token-name-input"]').fill(name2);
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill(name2);
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
 
     const rows = authedPage.locator('[data-testid="token-row"]');
@@ -48,7 +48,7 @@ test.describe('Tokens — API token CRUD lifecycle', () => {
     await authedPage.goto('/account');
 
     const tokenName = `revoke-token-${Date.now()}`;
-    await authedPage.locator('[data-testid="token-name-input"]').fill(tokenName);
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill(tokenName);
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
     await expect(authedPage.locator('[data-testid="token-display"]')).toBeVisible();
 
@@ -66,7 +66,7 @@ test.describe('Tokens — API token CRUD lifecycle', () => {
     await authedPage.goto('/account');
 
     const tokenName = `exact-name-${Date.now()}`;
-    await authedPage.locator('[data-testid="token-name-input"]').fill(tokenName);
+    await authedPage.locator('[data-testid="token-name-input"]').locator('input').fill(tokenName);
     await authedPage.locator('[data-testid="token-generate-btn"]').click();
     await expect(authedPage.locator('[data-testid="token-display"]')).toBeVisible();
 

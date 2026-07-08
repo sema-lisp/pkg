@@ -3,3 +3,7 @@
 .env
 .jake/
 /traces.jsonl
+
+# @sema/ui bundle build (the committed outputs are static/sema-ui.js + fonts;
+# node_modules holds the toolchain, rebuilt via `npm ci` / `npm run build:ui`).
+/node_modules

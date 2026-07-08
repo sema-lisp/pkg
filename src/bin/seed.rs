@@ -62,7 +62,6 @@ const POOL_CAP: usize = 5000;
 /// A featured package: a stable, hand-written demo entry with a real README.
 struct Featured {
     name: &'static str,
-    topic: &'static str,
     description: &'static str,
     github: bool,
 }
@@ -70,61 +69,51 @@ struct Featured {
 const FEATURED: &[Featured] = &[
     Featured {
         name: "sema-http",
-        topic: "HTTP",
         description: "Ergonomic HTTP client and server with async streaming bodies",
         github: true,
     },
     Featured {
         name: "sema-json",
-        topic: "JSON",
         description: "Fast, allocation-light JSON parser and serializer",
         github: true,
     },
     Featured {
         name: "sema-router",
-        topic: "routing",
         description: "Composable, type-safe URL routing",
         github: false,
     },
     Featured {
         name: "sema-sql",
-        topic: "SQL",
         description: "SQL query builder with a pooled async driver",
         github: true,
     },
     Featured {
         name: "sema-cli",
-        topic: "CLI",
         description: "Declarative command-line argument parsing",
         github: false,
     },
     Featured {
         name: "sema-async",
-        topic: "async",
         description: "Lightweight async runtime and task scheduler",
         github: true,
     },
     Featured {
         name: "sema-test",
-        topic: "testing",
         description: "Property-based testing and rich assertions",
         github: false,
     },
     Featured {
         name: "sema-crypto",
-        topic: "cryptography",
         description: "Hashing, HMAC, and AEAD primitives",
         github: true,
     },
     Featured {
         name: "sema-csv",
-        topic: "CSV",
         description: "Streaming CSV reader and writer",
         github: false,
     },
     Featured {
         name: "sema-log",
-        topic: "logging",
         description: "Structured, leveled, low-overhead logging",
         github: false,
     },
@@ -341,7 +330,7 @@ async fn main() {
             email: Set(email.into()),
             password_hash: Set(Some(dev_hash.clone())),
             github_id: Set(None),
-            homepage: Set(None),
+            homepage: Set((!banned).then(|| format!("https://{name}.dev"))),
             is_admin: Set(i32::from(is_admin)),
             banned_at: Set(banned.then(|| ts_days_ago(&mut rng, 90, 30))),
             created_at: Set(ts_days_ago(&mut rng, 200, 150)),
@@ -385,12 +374,15 @@ async fn main() {
         } else {
             (Some(dev_hash.clone()), None)
         };
+        // ~40% of authors set a homepage — enough to populate the field widely
+        // without every profile looking identical.
+        let homepage = rng.gen_bool(0.4).then(|| format!("https://{username}.example.dev"));
         users.push(user::ActiveModel {
             username: Set(username),
             email: Set(email),
             password_hash: Set(password_hash),
             github_id: Set(github_id),
-            homepage: Set(None),
+            homepage: Set(homepage),
             is_admin: Set(0),
             banned_at: Set(banned.then(|| ts_days_ago(&mut rng, 120, 1))),
             created_at: Set(ts_days_ago(&mut rng, 200, 1)),
@@ -460,7 +452,10 @@ async fn main() {
         } else {
             helge_id
         };
-        let readme = featured_readme(f);
+        // Featured packages are the showcase — always fully documented, and
+        // rendered through the app's real syntect pipeline so the highlighting
+        // matches a live publish exactly.
+        let readme = gen_readme(f.name, ns_of(f.name), f.description, ReadmeStyle::Rich, &mut rng);
         let pkg = package::ActiveModel {
             name: Set(f.name.into()),
             description: Set(f.description.into()),
@@ -475,10 +470,7 @@ async fn main() {
             github_repo: Set(f.github.then(|| format!("sema-lang/{}", f.name))),
             webhook_secret: Set(None),
             readme_raw: Set(Some(readme.clone())),
-            readme_html: Set(Some(comrak::markdown_to_html(
-                &readme,
-                &comrak::Options::default(),
-            ))),
+            readme_html: Set(Some(sema_pkg::github_sync::render_readme(&readme))),
             created_at: Set(ts_days_ago(&mut rng, 180, 120)),
             ..Default::default()
         };
@@ -536,6 +528,10 @@ async fn main() {
 
     // ── Bulk packages (streamed in per-batch transactions) ───────────────
     let bulk_target = counts.packages.saturating_sub(FEATURED.len());
+    // Give every bulk package a real (varied) README at dev scale so the whole
+    // set is inspectable; skip the per-package syntect render for large/huge
+    // loads, where it would dominate seed time and isn't the point.
+    let gen_readmes = counts.packages <= 200;
     // The realistic name space is finite (~topics × qualifiers); a
     // strictly-increasing suffix keeps names unique past it. Below a few million
     // packages we track seen names for prettier (unsuffixed) names where
@@ -582,17 +578,21 @@ async fn main() {
             }
             let owner_id = *all_ids.choose(&mut rng).unwrap();
             let github = rng.gen_bool(0.2);
-            let topic = name
-                .trim_start_matches("sema-")
-                .split('-')
-                .next_back()
-                .unwrap_or("core");
+            let topic = ns_of(&name);
             let sentence: String = Sentence(4..12).fake_with_rng(&mut rng);
             let desc = format!(
                 "{} library for Sema — {}",
                 capitalize(topic),
                 lower_first(&sentence)
             );
+            let (readme_raw, readme_html) = if gen_readmes {
+                let style = pick_readme_style(&mut rng);
+                let md = gen_readme(&name, ns_of(&name), &desc, style, &mut rng);
+                let html = sema_pkg::github_sync::render_readme(&md);
+                (Some(md), Some(html))
+            } else {
+                (None, None)
+            };
             pkgs.push(package::ActiveModel {
                 name: Set(name.clone()),
                 description: Set(desc),
@@ -604,8 +604,8 @@ async fn main() {
                 }),
                 github_repo: Set(github.then(|| format!("sema-lang/{name}"))),
                 webhook_secret: Set(None),
-                readme_raw: Set(None),
-                readme_html: Set(None),
+                readme_raw: Set(readme_raw),
+                readme_html: Set(readme_html),
                 created_at: Set(ts_days_ago(&mut rng, 170, 20)),
                 ..Default::default()
             });
@@ -1001,13 +1001,196 @@ fn gen_pkg_name(rng: &mut StdRng) -> String {
     }
 }
 
-fn featured_readme(f: &Featured) -> String {
-    format!(
-        "# {name}\n\n{desc}.\n\n## Install\n\n```\nsema add {name}\n```\n\n## Usage\n\n```sema\n(import \"{name}\")\n```\n\n{name} provides {topic} building blocks for Sema applications.\n",
-        name = f.name,
-        desc = f.description,
-        topic = f.topic,
-    )
+// ── README generation ──────────────────────────────────────────────────────
+//
+// Seeded packages get realistic, varied READMEs modeled on the `sema-lisp` org's
+// `pkg-packages` templates, so the rendered-README styling has full data to work
+// against. Three author "voices" are simulated — a terse one-liner, a
+// conventional package README, and an exhaustively documented one — picked
+// per-package so a dev set shows the whole spread. All three exercise the
+// markdown features the renderer styles (headings, tables, fenced `sema`/`bash`
+// code, blockquotes, lists, task lists, links, images, inline code, rules).
+
+#[derive(Clone, Copy)]
+enum ReadmeStyle {
+    Sparse,
+    Standard,
+    Rich,
+}
+
+fn pick_readme_style(rng: &mut StdRng) -> ReadmeStyle {
+    match rng.gen_range(0..100) {
+        0..=24 => ReadmeStyle::Sparse,   // 25% — minimal, "the code speaks for itself"
+        25..=69 => ReadmeStyle::Standard, // 45% — the conventional shape
+        _ => ReadmeStyle::Rich,          // 30% — meticulous maintainer
+    }
+}
+
+/// The module namespace a package's functions live under (`sema-fast-json` → `json`).
+/// Skips the numeric suffix the bulk generator appends on name collision
+/// (`sema-csv-4` → `csv`, not `4`), so descriptions and API docs read naturally.
+fn ns_of(name: &str) -> &str {
+    name.trim_start_matches("sema-")
+        .split('-')
+        .rev()
+        .find(|s| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or("core")
+}
+
+// Author-voice variance: a few interchangeable phrasings picked per package so
+// no two READMEs read identically.
+const TAGLINES: &[&str] = &[
+    "Small surface, no surprises.",
+    "Pragmatic defaults, escape hatches when you need them.",
+    "Built for real workloads and tested under load.",
+    "Zero config to start; tune it when it matters.",
+    "Composable pieces that stay out of your way.",
+    "One obvious way to do the common thing.",
+];
+
+const CLOSING_NOTES: &[&str] = &[
+    "Issues and pull requests welcome.",
+    "Semantic-versioned; breaking changes only on majors.",
+    "Battle-tested in production at a handful of shops.",
+    "Feedback shapes the roadmap — open an issue.",
+];
+
+/// A small, generic API surface derived from the namespace: `(suffix, args, doc)`.
+fn api_ops(ns: &str) -> Vec<(String, &'static str, String)> {
+    vec![
+        ("new".into(), "opts?", format!("Construct a {ns} handle")),
+        ("parse".into(), "input", format!("Parse a string into a {ns} value")),
+        ("encode".into(), "value", format!("Serialize a value to {ns}")),
+        ("decode".into(), "input", format!("Read a {ns} value from a string")),
+        ("read".into(), "path", "Read and parse a file".into()),
+        ("write!".into(), "path value", "Write a value to disk".into()),
+        ("with".into(), "handle f", "Run `f` with a scoped handle, closing it after".into()),
+        ("close!".into(), "handle", "Release the handle's resources".into()),
+    ]
+}
+
+fn fill(tpl: &str, name: &str, ns: &str, desc: &str) -> String {
+    tpl.replace("{name}", name)
+        .replace("{Ns}", &capitalize(ns))
+        .replace("{ns}", ns)
+        .replace("{desc}", desc)
+}
+
+/// Build a README for a package in the given style, with light per-package variance.
+fn gen_readme(name: &str, ns: &str, desc: &str, style: ReadmeStyle, rng: &mut StdRng) -> String {
+    // Templates supply their own trailing punctuation; drop any the description
+    // already carries so we never render a doubled period.
+    let desc = desc.trim_end_matches('.').trim();
+    let tagline = *TAGLINES.choose(rng).unwrap();
+    let closing = *CLOSING_NOTES.choose(rng).unwrap();
+    let ver = format!(
+        "{}.{}.{}",
+        rng.gen_range(0..=3),
+        rng.gen_range(0..=12),
+        rng.gen_range(0..=9)
+    );
+    let ops = api_ops(ns);
+
+    match style {
+        // ── Sparse: a title, a line, install, one example. ──────────────────
+        ReadmeStyle::Sparse => {
+            let (suffix, args, _) = &ops[1]; // parse
+            fill(
+                &format!(
+                    "# {{name}}\n\n{{desc}}.\n\n```bash\nsema pkg add {{name}}\n```\n\n```sema\n(import \"{{name}}\")\n\n({{ns}}/{suffix} {args_ex})\n```\n",
+                    suffix = suffix,
+                    args_ex = if args.contains(' ') { "x y" } else { "x" },
+                ),
+                name,
+                ns,
+                desc,
+            )
+        }
+
+        // ── Standard: the conventional package README shape. ─────────────────
+        ReadmeStyle::Standard => {
+            let mut md = String::new();
+            md.push_str(&fill("# {name}\n\n{desc}. {tagline}\n\n", name, ns, desc)
+                .replace("{tagline}", tagline));
+            md.push_str(&fill(
+                "## Install\n\n```bash\nsema pkg add {name}                        # registry\nsema pkg add github.com/sema-lisp/{name}   # git\n```\n\n",
+                name, ns, desc,
+            ));
+            md.push_str(&fill(
+                "## Quick start\n\n```sema\n(import \"{name}\")\n\n(define h ({ns}/new {:strict true}))\n({ns}/encode h {:hello \"world\"})\n; => \"…\"\n```\n\n",
+                name, ns, desc,
+            ));
+            md.push_str("## API\n\n| Function | Description |\n|---|---|\n");
+            for (suffix, args, doc) in ops.iter().take(5) {
+                md.push_str(&fill(
+                    &format!("| `({{ns}}/{suffix} {args})` | {doc} |\n", suffix = suffix, args = args, doc = doc),
+                    name, ns, desc,
+                ));
+            }
+            md.push_str(&fill("\n> **Note:** every `{ns}/*` function raises a descriptive error rather than returning `nil` on bad input.\n\n", name, ns, desc));
+            md.push_str(&fill("## License\n\nMIT © the {name} authors. {closing}\n", name, ns, desc).replace("{closing}", closing));
+            md
+        }
+
+        // ── Rich: exhaustive, meticulous maintainer. ─────────────────────────
+        ReadmeStyle::Rich => {
+            let mut md = String::new();
+            md.push_str(&fill("# {name}\n\n", name, ns, desc));
+            md.push_str(&format!(
+                "![version](https://img.shields.io/badge/version-{ver}-c8a855) ![license](https://img.shields.io/badge/license-MIT-6a9955) ![sema](https://img.shields.io/badge/sema-%E2%89%A50.9-informational)\n\n",
+            ));
+            md.push_str(&fill("> {desc}. {tagline}\n\n", name, ns, desc).replace("{tagline}", tagline));
+            md.push_str("## Features\n\n");
+            md.push_str(&fill(
+                "- **Ergonomic** — the common case is one call, no ceremony.\n- **Safe** — bad input raises before any side effect.\n- **Composable** — plays well with the rest of the {ns} ecosystem.\n- **Fast** — allocation-light hot paths, streaming where it counts.\n\n",
+                name, ns, desc,
+            ));
+            md.push_str(&fill(
+                "## Install\n\n```bash\nsema pkg add {name}                        # from the registry\nsema pkg add github.com/sema-lisp/{name}   # pin to git\n```\n\nRequires Sema **≥ 0.9**.\n\n",
+                name, ns, desc,
+            ));
+            md.push_str(&fill(
+                "## Quick start\n\n```sema\n(import \"{name}\")\n\n(define h ({ns}/new {:strict true :timeout 5000}))\n\n({ns}/encode h {:name \"ada\" :ok true})\n; => \"…\"\n\n(-> \"input.txt\"\n    ({ns}/read)\n    ({ns}/encode h))\n```\n\n",
+                name, ns, desc,
+            ));
+            md.push_str("## API\n\n| Function | Description |\n|---|---|\n");
+            for (suffix, args, doc) in ops.iter() {
+                md.push_str(&fill(
+                    &format!("| `({{ns}}/{suffix} {args})` | {doc} |\n", suffix = suffix, args = args, doc = doc),
+                    name, ns, desc,
+                ));
+            }
+            md.push('\n');
+            // Two per-function sections with examples + option lists.
+            for (suffix, args, doc) in ops.iter().take(2) {
+                md.push_str(&fill(
+                    &format!(
+                        "### `{{ns}}/{suffix}`\n\n```sema\n({{ns}}/{suffix} {args})\n```\n\n{doc}. Options:\n\n1. `:strict` — reject unknown keys (default `false`).\n2. `:timeout` — milliseconds before giving up.\n\n",
+                        suffix = suffix, args = args, doc = doc,
+                    ),
+                    name, ns, desc,
+                ));
+            }
+            md.push_str(&fill(
+                "## Error handling\n\nEvery entry point validates its arguments and raises a *typed* error you can match on:\n\n```sema\n(try\n  ({ns}/parse \"not-{ns}\")\n  (catch e\n    (:kind e)))       ; => :{ns}/parse-error\n```\n\n",
+                name, ns, desc,
+            ));
+            md.push_str(&fill(
+                "## Configuration\n\n| Env var | Default | Purpose |\n|---|---|---|\n| `{Ns}_TIMEOUT` | `5000` | Request timeout (ms) |\n| `{Ns}_STRICT` | `0` | Reject unknown keys when `1` |\n\n",
+                name, ns, desc,
+            ));
+            md.push_str(&fill(
+                "## Roadmap\n\n- [x] Core {ns} encode/decode\n- [x] Streaming reader\n- [ ] Zero-copy fast path\n- [ ] Pluggable back-ends\n\n",
+                name, ns, desc,
+            ));
+            md.push_str("---\n\n");
+            md.push_str(&fill(
+                "## Contributing\n\nRun the suite with `sema test`. Keep the public surface small and the docs honest.\n\n## License\n\nMIT © the {name} authors. {closing}\n",
+                name, ns, desc,
+            ).replace("{closing}", closing));
+            md
+        }
+    }
 }
 
 // ── String / time utilities ────────────────────────────────────────────────

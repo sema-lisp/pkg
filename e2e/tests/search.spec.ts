@@ -11,7 +11,7 @@ test.describe('Search and pagination', () => {
     await publishPackage(request, apiToken, name, '1.0.0');
 
     await authedPage.goto(`/packages/${name}`);
-    const headerSearch = authedPage.locator('header form[action="/search"] input[name="q"]');
+    const headerSearch = authedPage.getByTestId('header-search');
     await headerSearch.fill(name);
     await headerSearch.press('Enter');
 

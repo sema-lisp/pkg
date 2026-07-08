@@ -11,7 +11,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      'DATABASE_URL=sqlite://e2e/e2e-test.db?mode=rwc BLOB_DIR=e2e/e2e-blobs BASE_URL=http://localhost:3111 PORT=3111 cargo run',
+      'DATABASE_URL=sqlite://e2e/e2e-test.db?mode=rwc BLOB_DIR=e2e/e2e-blobs BASE_URL=http://localhost:3111 PORT=3111 cargo run --bin sema-pkg',
     port: 3111,
     reuseExistingServer: true,
     timeout: 120_000, // cargo build can take a while

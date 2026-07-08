@@ -2,7 +2,7 @@
 {% block title %}Search — Sema Pkg{% endblock %}
 {% block header_center %}
 <form action="/search" method="get" class="search-bar" style="max-width:22rem;">
-  <input type="text" name="q" class="search-input" placeholder="Search packages…" value="{{ query }}">
+  <input type="text" name="q" class="search-input" placeholder="Search packages…" value="{{ query }}" data-testid="header-search">
   <button type="submit" class="search-btn">Search</button>
 </form>
 {% endblock %}

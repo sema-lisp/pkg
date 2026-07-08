@@ -20,6 +20,62 @@ fn render<T: Template>(tmpl: T) -> impl IntoResponse {
     }
 }
 
+#[derive(Template)]
+#[template(path = "404.html")]
+pub struct NotFoundTemplate {
+    pub username: Option<String>,
+    pub is_admin: bool,
+    pub heading: String,
+    pub message: String,
+    pub subject: Option<String>,
+}
+
+/// Render the styled 404 page, carrying the current session's header state.
+async fn render_not_found(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    heading: &str,
+    message: &str,
+    subject: Option<String>,
+) -> axum::response::Response {
+    let si = get_session_info(state, headers).await;
+    (
+        StatusCode::NOT_FOUND,
+        render(NotFoundTemplate {
+            username: si.username,
+            is_admin: si.is_admin,
+            heading: heading.to_string(),
+            message: message.to_string(),
+            subject,
+        }),
+    )
+        .into_response()
+}
+
+/// Router fallback for unmatched routes: JSON for the API surface, the HTML
+/// not-found page for everything else.
+pub async fn fallback(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    if uri.path().starts_with("/api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "Not found" })),
+        )
+            .into_response();
+    }
+    render_not_found(
+        &state,
+        &headers,
+        "Page not found",
+        "We couldn't find the page you're looking for",
+        None,
+    )
+    .await
+}
+
 struct SessionInfo {
     username: Option<String>,
     is_admin: bool,
@@ -270,7 +326,14 @@ pub async fn package_detail(
     let pkg = match pkg {
         Some(p) => p,
         None => {
-            return (StatusCode::NOT_FOUND, Html("Package not found".to_string())).into_response()
+            return render_not_found(
+                &state,
+                &headers,
+                "Package not found",
+                "No package is registered under the name",
+                Some(name),
+            )
+            .await
         }
     };
 

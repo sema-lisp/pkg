@@ -10,9 +10,9 @@ test.describe('Authentication', () => {
       // Switch to the "Create Account" tab
       await page.getByTestId('tab-register').click();
 
-      await page.getByTestId('reg-username').fill(`newuser${ts}`);
-      await page.getByTestId('reg-email').fill(`newuser${ts}@test.com`);
-      await page.getByTestId('reg-password').fill('password123');
+      await page.getByTestId('reg-username').locator('input').fill(`newuser${ts}`);
+      await page.getByTestId('reg-email').locator('input').fill(`newuser${ts}@test.com`);
+      await page.getByTestId('reg-password').locator('input').fill('password123');
       await page.getByTestId('reg-submit').click();
 
       await page.waitForURL(/\/account/, { timeout: 10_000 });
@@ -23,9 +23,9 @@ test.describe('Authentication', () => {
       await page.goto('/login');
       await page.getByTestId('tab-register').click();
 
-      await page.getByTestId('reg-username').fill('x');
-      await page.getByTestId('reg-email').fill('x@test.com');
-      await page.getByTestId('reg-password').fill('password123');
+      await page.getByTestId('reg-username').locator('input').fill('x');
+      await page.getByTestId('reg-email').locator('input').fill('x@test.com');
+      await page.getByTestId('reg-password').locator('input').fill('password123');
       await page.getByTestId('reg-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
@@ -36,9 +36,9 @@ test.describe('Authentication', () => {
       await page.goto('/login');
       await page.getByTestId('tab-register').click();
 
-      await page.getByTestId('reg-username').fill(`shortpw${ts}`);
-      await page.getByTestId('reg-email').fill(`shortpw${ts}@test.com`);
-      await page.getByTestId('reg-password').fill('ab');
+      await page.getByTestId('reg-username').locator('input').fill(`shortpw${ts}`);
+      await page.getByTestId('reg-email').locator('input').fill(`shortpw${ts}@test.com`);
+      await page.getByTestId('reg-password').locator('input').fill('ab');
       await page.getByTestId('reg-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
@@ -49,11 +49,11 @@ test.describe('Authentication', () => {
       await page.goto('/login');
       await page.getByTestId('tab-register').click();
 
-      await page.getByTestId('reg-username').fill(`bademail${ts}`);
+      await page.getByTestId('reg-username').locator('input').fill(`bademail${ts}`);
       // Remove type="email" to bypass browser validation, then fill invalid value
       await page.getByTestId('reg-email').evaluate((el: HTMLInputElement) => el.type = 'text');
-      await page.getByTestId('reg-email').fill('xx');
-      await page.getByTestId('reg-password').fill('password123');
+      await page.getByTestId('reg-email').locator('input').fill('xx');
+      await page.getByTestId('reg-password').locator('input').fill('password123');
       await page.getByTestId('reg-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
@@ -68,9 +68,9 @@ test.describe('Authentication', () => {
       await page.goto('/login');
       await page.getByTestId('tab-register').click();
 
-      await page.getByTestId('reg-username').fill(username);
-      await page.getByTestId('reg-email').fill(`${username}x@test.com`);
-      await page.getByTestId('reg-password').fill('password123');
+      await page.getByTestId('reg-username').locator('input').fill(username);
+      await page.getByTestId('reg-email').locator('input').fill(`${username}x@test.com`);
+      await page.getByTestId('reg-password').locator('input').fill('password123');
       await page.getByTestId('reg-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
@@ -84,8 +84,8 @@ test.describe('Authentication', () => {
       await register(request, username, `${username}@test.com`);
 
       await page.goto('/login');
-      await page.getByTestId('login-username').fill(username);
-      await page.getByTestId('login-password').fill('password123');
+      await page.getByTestId('login-username').locator('input').fill(username);
+      await page.getByTestId('login-password').locator('input').fill('password123');
       await page.getByTestId('login-submit').click();
 
       await page.waitForURL(/\/account/, { timeout: 10_000 });
@@ -98,8 +98,8 @@ test.describe('Authentication', () => {
       await register(request, username, `${username}@test.com`);
 
       await page.goto('/login');
-      await page.getByTestId('login-username').fill(username);
-      await page.getByTestId('login-password').fill('totallyWrongPassword');
+      await page.getByTestId('login-username').locator('input').fill(username);
+      await page.getByTestId('login-password').locator('input').fill('totallyWrongPassword');
       await page.getByTestId('login-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
@@ -107,11 +107,27 @@ test.describe('Authentication', () => {
 
     test('non-existent user shows error', async ({ page }) => {
       await page.goto('/login');
-      await page.getByTestId('login-username').fill('nosuchuser999');
-      await page.getByTestId('login-password').fill('password123');
+      await page.getByTestId('login-username').locator('input').fill('nosuchuser999');
+      await page.getByTestId('login-password').locator('input').fill('password123');
       await page.getByTestId('login-submit').click();
 
       await expect(page.getByTestId('auth-error')).toBeVisible({ timeout: 5_000 });
+    });
+
+    test('pressing Enter in a field submits the login form', async ({ page, request }) => {
+      const ts = Date.now();
+      const username = `enterlogin${ts}`;
+      await register(request, username, `${username}@test.com`);
+
+      await page.goto('/login');
+      await page.getByTestId('login-username').locator('input').fill(username);
+      const password = page.getByTestId('login-password').locator('input');
+      await password.fill('password123');
+      // No button click — the <sema-input> submits its form on Enter.
+      await password.press('Enter');
+
+      await page.waitForURL(/\/account/, { timeout: 10_000 });
+      expect(page.url()).toContain('/account');
     });
   });
 
@@ -122,8 +138,8 @@ test.describe('Authentication', () => {
       await register(request, username, `${username}@test.com`);
 
       await page.goto('/login');
-      await page.getByTestId('login-username').fill(username);
-      await page.getByTestId('login-password').fill('password123');
+      await page.getByTestId('login-username').locator('input').fill(username);
+      await page.getByTestId('login-password').locator('input').fill('password123');
       await page.getByTestId('login-submit').click();
       await page.waitForURL(/\/account/, { timeout: 10_000 });
 
@@ -137,8 +153,8 @@ test.describe('Authentication', () => {
 
       // Log in via the UI
       await page.goto('/login');
-      await page.getByTestId('login-username').fill(username);
-      await page.getByTestId('login-password').fill('password123');
+      await page.getByTestId('login-username').locator('input').fill(username);
+      await page.getByTestId('login-password').locator('input').fill('password123');
       await page.getByTestId('login-submit').click();
       await page.waitForURL(/\/account/, { timeout: 10_000 });
 
@@ -175,8 +191,8 @@ test.describe('Authentication', () => {
       await register(request, username, `alice${ts}@test.com`);
 
       await page.goto('/login');
-      await page.getByTestId('login-username').fill(username.toLowerCase());
-      await page.getByTestId('login-password').fill('password123');
+      await page.getByTestId('login-username').locator('input').fill(username.toLowerCase());
+      await page.getByTestId('login-password').locator('input').fill('password123');
       await page.getByTestId('login-submit').click();
 
       await page.waitForURL(/\/account/, { timeout: 10_000 });
