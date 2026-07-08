@@ -3,6 +3,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY templates/ templates/
+# include_str!'d at build time (the Sema README-highlighting grammar).
+COPY syntaxes/ syntaxes/
 RUN cargo build --release
 
 FROM debian:bookworm-slim
