@@ -237,11 +237,70 @@ fn syntax_set() -> &'static syntect::parsing::SyntaxSet {
     })
 }
 
+/// Parse a `#rrggbb` string into a syntect Color (opaque).
+fn hex_color(s: &str) -> syntect::highlighting::Color {
+    let byte = |i: usize| u8::from_str_radix(s.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0);
+    syntect::highlighting::Color {
+        r: byte(1),
+        g: byte(3),
+        b: byte(5),
+        a: 0xFF,
+    }
+}
+
+/// The `sema-dark` theme — a direct port of the website's code theme
+/// (`website/.vitepress/sema-code-theme.json`), mapping the same scopes the
+/// grammar emits, so README code looks identical to the docs.
+fn sema_theme() -> syntect::highlighting::Theme {
+    use std::str::FromStr;
+    use syntect::highlighting::{
+        FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
+    };
+    let item = |scope: &str, fg: &str, italic: bool| ThemeItem {
+        scope: ScopeSelectors::from_str(scope).unwrap_or_default(),
+        style: StyleModifier {
+            foreground: Some(hex_color(fg)),
+            background: None,
+            font_style: italic.then_some(FontStyle::ITALIC),
+        },
+    };
+    Theme {
+        name: Some("sema-dark".to_string()),
+        author: None,
+        settings: ThemeSettings {
+            foreground: Some(hex_color("#e9e3d6")),
+            background: Some(hex_color("#181512")),
+            ..ThemeSettings::default()
+        },
+        scopes: vec![
+            item("comment", "#6b6354", true),
+            item("string, constant.character", "#a8c47a", false),
+            item(
+                "constant.numeric, constant.language.boolean, constant.language.nil",
+                "#d19a66",
+                false,
+            ),
+            item("constant.other.keyword", "#7aacb8", false),
+            item(
+                "keyword.control, keyword.control.definition, keyword.operator.threading",
+                "#c8a855",
+                false,
+            ),
+            item(
+                "punctuation, keyword.operator.quote, keyword.operator.quasiquote, keyword.operator.unquote, keyword.operator.unquote-splicing",
+                "#6a6258",
+                false,
+            ),
+        ],
+    }
+}
+
 /// Render a Markdown README to HTML using comrak (GitHub Flavored Markdown) with
-/// syntect syntax highlighting.
+/// syntect syntax highlighting — the real Sema grammar + the docs' color theme.
 pub fn render_readme(markdown: &str) -> String {
     use comrak::plugins::syntect::SyntectAdapterBuilder;
     use comrak::{markdown_to_html_with_plugins, Options, Plugins};
+    use syntect::highlighting::ThemeSet;
 
     let mut options = Options::default();
     options.extension.table = true;
@@ -251,8 +310,14 @@ pub fn render_readme(markdown: &str) -> String {
     options.extension.header_ids = Some(String::new());
     options.render.unsafe_ = false;
 
+    // ThemeSet isn't Clone; build one holding just our theme (README rendering
+    // only happens on publish/backfill, so the cost is irrelevant).
+    let mut themes = ThemeSet::default();
+    themes.themes.insert("sema-dark".to_string(), sema_theme());
+
     let adapter = SyntectAdapterBuilder::new()
-        .theme("base16-ocean.dark")
+        .theme("sema-dark")
+        .theme_set(themes)
         .syntax_set(syntax_set().clone())
         .build();
     let mut plugins = Plugins::default();
@@ -380,5 +445,16 @@ mod readme_tests {
             !html.contains("background-color"),
             "syntect theme background should be stripped:\n{html}"
         );
+    }
+}
+
+#[cfg(test)]
+mod theme_probe {
+    use super::*;
+    #[test]
+    fn sema_uses_website_colors() {
+        let html = render_readme("```sema\n(define (f x) (if x 1 nil))\n```\n");
+        // gold keyword.control (#c8a855) and green string/nil etc from the theme
+        assert!(html.to_lowercase().contains("c8a855"), "expected gold keyword color:\n{html}");
     }
 }
