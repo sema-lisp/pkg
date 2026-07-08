@@ -27,6 +27,7 @@ export default defineConfig({
     outDir: 'static',
     emptyOutDir: false,
     cssCodeSplit: false,
+    minify: 'esbuild',
     lib: { entry: 'web/ui-entry.js', formats: ['es'], fileName: () => 'sema-ui.js' },
     rollupOptions: { output: { assetFileNames: 'sema-ui.[ext]' } },
   },

@@ -455,6 +455,9 @@ mod theme_probe {
     fn sema_uses_website_colors() {
         let html = render_readme("```sema\n(define (f x) (if x 1 nil))\n```\n");
         // gold keyword.control (#c8a855) and green string/nil etc from the theme
-        assert!(html.to_lowercase().contains("c8a855"), "expected gold keyword color:\n{html}");
+        assert!(
+            html.to_lowercase().contains("c8a855"),
+            "expected gold keyword color:\n{html}"
+        );
     }
 }

@@ -70,10 +70,7 @@ mod tests {
 
     #[test]
     fn prefers_shallowest_readme() {
-        let tgz = make_targz(&[
-            ("examples/README.md", "nested"),
-            ("README.md", "root"),
-        ]);
+        let tgz = make_targz(&[("examples/README.md", "nested"), ("README.md", "root")]);
         assert_eq!(extract_readme(&tgz).as_deref(), Some("root"));
     }
 

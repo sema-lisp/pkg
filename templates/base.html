@@ -9,7 +9,10 @@
 <meta property="og:type" content="website">
 <meta property="og:title" content="{% block og_title %}Sema Pkg — Package Registry{% endblock %}">
 <meta property="og:description" content="{% block og_description %}Discover and share Sema packages — the package registry for the Sema programming language.{% endblock %}">
-<meta property="og:url" content="https://pkg.sema-lang.com">
+{% block seo_urls %}
+<link rel="canonical" href="{{ base_url }}/">
+<meta property="og:url" content="{{ base_url }}/">
+{% endblock %}
 <meta property="og:image" content="https://sema-lang.com/og-website.png">
 <meta property="og:image:width" content="1424">
 <meta property="og:image:height" content="752">
@@ -24,6 +27,8 @@
 <link rel="preload" href="/static/fonts/jetbrains-mono-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/cormorant-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="alternate" type="application/rss+xml" title="Recently updated packages (RSS)" href="/feed/recent.xml">
+<link rel="alternate" type="application/atom+xml" title="Recently updated packages (Atom)" href="/feed/recent.atom">
 {% block head %}{% endblock %}
 </head>
 <body>

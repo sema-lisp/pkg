@@ -376,7 +376,9 @@ async fn main() {
         };
         // ~40% of authors set a homepage — enough to populate the field widely
         // without every profile looking identical.
-        let homepage = rng.gen_bool(0.4).then(|| format!("https://{username}.example.dev"));
+        let homepage = rng
+            .gen_bool(0.4)
+            .then(|| format!("https://{username}.example.dev"));
         users.push(user::ActiveModel {
             username: Set(username),
             email: Set(email),
@@ -455,7 +457,13 @@ async fn main() {
         // Featured packages are the showcase — always fully documented, and
         // rendered through the app's real syntect pipeline so the highlighting
         // matches a live publish exactly.
-        let readme = gen_readme(f.name, ns_of(f.name), f.description, ReadmeStyle::Rich, &mut rng);
+        let readme = gen_readme(
+            f.name,
+            ns_of(f.name),
+            f.description,
+            ReadmeStyle::Rich,
+            &mut rng,
+        );
         let pkg = package::ActiveModel {
             name: Set(f.name.into()),
             description: Set(f.description.into()),
@@ -1020,9 +1028,9 @@ enum ReadmeStyle {
 
 fn pick_readme_style(rng: &mut StdRng) -> ReadmeStyle {
     match rng.gen_range(0..100) {
-        0..=24 => ReadmeStyle::Sparse,   // 25% — minimal, "the code speaks for itself"
+        0..=24 => ReadmeStyle::Sparse, // 25% — minimal, "the code speaks for itself"
         25..=69 => ReadmeStyle::Standard, // 45% — the conventional shape
-        _ => ReadmeStyle::Rich,          // 30% — meticulous maintainer
+        _ => ReadmeStyle::Rich,        // 30% — meticulous maintainer
     }
 }
 
@@ -1059,13 +1067,37 @@ const CLOSING_NOTES: &[&str] = &[
 fn api_ops(ns: &str) -> Vec<(String, &'static str, String)> {
     vec![
         ("new".into(), "opts?", format!("Construct a {ns} handle")),
-        ("parse".into(), "input", format!("Parse a string into a {ns} value")),
-        ("encode".into(), "value", format!("Serialize a value to {ns}")),
-        ("decode".into(), "input", format!("Read a {ns} value from a string")),
+        (
+            "parse".into(),
+            "input",
+            format!("Parse a string into a {ns} value"),
+        ),
+        (
+            "encode".into(),
+            "value",
+            format!("Serialize a value to {ns}"),
+        ),
+        (
+            "decode".into(),
+            "input",
+            format!("Read a {ns} value from a string"),
+        ),
         ("read".into(), "path", "Read and parse a file".into()),
-        ("write!".into(), "path value", "Write a value to disk".into()),
-        ("with".into(), "handle f", "Run `f` with a scoped handle, closing it after".into()),
-        ("close!".into(), "handle", "Release the handle's resources".into()),
+        (
+            "write!".into(),
+            "path value",
+            "Write a value to disk".into(),
+        ),
+        (
+            "with".into(),
+            "handle f",
+            "Run `f` with a scoped handle, closing it after".into(),
+        ),
+        (
+            "close!".into(),
+            "handle",
+            "Release the handle's resources".into(),
+        ),
     ]
 }
 
@@ -1110,8 +1142,10 @@ fn gen_readme(name: &str, ns: &str, desc: &str, style: ReadmeStyle, rng: &mut St
         // ── Standard: the conventional package README shape. ─────────────────
         ReadmeStyle::Standard => {
             let mut md = String::new();
-            md.push_str(&fill("# {name}\n\n{desc}. {tagline}\n\n", name, ns, desc)
-                .replace("{tagline}", tagline));
+            md.push_str(
+                &fill("# {name}\n\n{desc}. {tagline}\n\n", name, ns, desc)
+                    .replace("{tagline}", tagline),
+            );
             md.push_str(&fill(
                 "## Install\n\n```bash\nsema pkg add {name}                        # registry\nsema pkg add github.com/sema-lisp/{name}   # git\n```\n\n",
                 name, ns, desc,
@@ -1123,12 +1157,27 @@ fn gen_readme(name: &str, ns: &str, desc: &str, style: ReadmeStyle, rng: &mut St
             md.push_str("## API\n\n| Function | Description |\n|---|---|\n");
             for (suffix, args, doc) in ops.iter().take(5) {
                 md.push_str(&fill(
-                    &format!("| `({{ns}}/{suffix} {args})` | {doc} |\n", suffix = suffix, args = args, doc = doc),
-                    name, ns, desc,
+                    &format!(
+                        "| `({{ns}}/{suffix} {args})` | {doc} |\n",
+                        suffix = suffix,
+                        args = args,
+                        doc = doc
+                    ),
+                    name,
+                    ns,
+                    desc,
                 ));
             }
             md.push_str(&fill("\n> **Note:** every `{ns}/*` function raises a descriptive error rather than returning `nil` on bad input.\n\n", name, ns, desc));
-            md.push_str(&fill("## License\n\nMIT © the {name} authors. {closing}\n", name, ns, desc).replace("{closing}", closing));
+            md.push_str(
+                &fill(
+                    "## License\n\nMIT © the {name} authors. {closing}\n",
+                    name,
+                    ns,
+                    desc,
+                )
+                .replace("{closing}", closing),
+            );
             md
         }
 
@@ -1139,7 +1188,9 @@ fn gen_readme(name: &str, ns: &str, desc: &str, style: ReadmeStyle, rng: &mut St
             md.push_str(&format!(
                 "![version](https://img.shields.io/badge/version-{ver}-c8a855) ![license](https://img.shields.io/badge/license-MIT-6a9955) ![sema](https://img.shields.io/badge/sema-%E2%89%A50.9-informational)\n\n",
             ));
-            md.push_str(&fill("> {desc}. {tagline}\n\n", name, ns, desc).replace("{tagline}", tagline));
+            md.push_str(
+                &fill("> {desc}. {tagline}\n\n", name, ns, desc).replace("{tagline}", tagline),
+            );
             md.push_str("## Features\n\n");
             md.push_str(&fill(
                 "- **Ergonomic** — the common case is one call, no ceremony.\n- **Safe** — bad input raises before any side effect.\n- **Composable** — plays well with the rest of the {ns} ecosystem.\n- **Fast** — allocation-light hot paths, streaming where it counts.\n\n",
@@ -1156,8 +1207,15 @@ fn gen_readme(name: &str, ns: &str, desc: &str, style: ReadmeStyle, rng: &mut St
             md.push_str("## API\n\n| Function | Description |\n|---|---|\n");
             for (suffix, args, doc) in ops.iter() {
                 md.push_str(&fill(
-                    &format!("| `({{ns}}/{suffix} {args})` | {doc} |\n", suffix = suffix, args = args, doc = doc),
-                    name, ns, desc,
+                    &format!(
+                        "| `({{ns}}/{suffix} {args})` | {doc} |\n",
+                        suffix = suffix,
+                        args = args,
+                        doc = doc
+                    ),
+                    name,
+                    ns,
+                    desc,
                 ));
             }
             md.push('\n');

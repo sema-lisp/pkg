@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} — Sema Pkg{% endblock %}
+{% block description %}{{ description }}{% endblock %}
+{% block og_title %}{{ name }} — Sema Pkg{% endblock %}
+{% block og_description %}{{ description }}{% endblock %}
+{% block twitter_title %}{{ name }} — Sema Pkg{% endblock %}
+{% block twitter_description %}{{ description }}{% endblock %}
+{% block seo_urls %}
+<link rel="canonical" href="{{ base_url }}/packages/{{ name }}">
+<meta property="og:url" content="{{ base_url }}/packages/{{ name }}">
+{% endblock %}
 {% block head %}
+{% if let Some(jsonld) = jsonld %}
+<script type="application/ld+json">{{ jsonld|safe }}</script>
+{% endif %}
 <style>
   .detail-grid {
     display: grid;
@@ -113,14 +125,14 @@
 {% endblock %}
 {% block header_center %}
 <form action="/search" method="get" class="search-bar" style="max-width:22rem;">
-  <input type="text" name="q" class="search-input" placeholder="Search packages…" data-testid="header-search">
+  <input type="text" name="q" class="search-input" aria-label="Search packages" placeholder="Search packages…" data-testid="header-search">
   <button type="submit" class="search-btn">Search</button>
 </form>
 {% endblock %}
 {% block content %}
 <div class="page-content">
   <div style="margin-bottom:1.5rem;">
-    <div style="display:flex; align-items:baseline; gap:0.6rem; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
       <h1 style="font-size:1.3rem; color:var(--gold); font-weight:500;" data-testid="pkg-name">{{ name }}</h1>
       {% if let Some(v) = versions.first() %}
       <span class="badge badge-gold">{{ v.version }}</span>

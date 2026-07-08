@@ -76,6 +76,14 @@ async fn main() {
             &format!("/packages/{target}"),
             None,
         ),
+        // Crawler + syndication surface. `/sitemap/1.xml` is the heaviest of
+        // these (a 50k-row PK range scan) — watch its p99 as package count grows.
+        ep("GET /robots.txt", "/robots.txt", None),
+        ep("GET /sitemap.xml", "/sitemap.xml", None),
+        ep("GET /sitemap/{n}.xml", "/sitemap/1.xml", None),
+        ep("GET /feed/recent.xml", "/feed/recent.xml", None),
+        ep("GET /feed/recent.atom", "/feed/recent.atom", None),
+        ep("GET /feed/search.xml", "/feed/search.xml?q=lib", None),
         ep("GET /login", "/login", None),
         ep("GET /account", "/account", Some(user.clone())),
         ep("GET /admin (web)", "/admin", Some(admin.clone())),

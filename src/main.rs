@@ -51,6 +51,8 @@ async fn main() {
         blobs,
         metrics_render,
         stats_cache: Default::default(),
+        sitemap_cache: Default::default(),
+        recent_feed_cache: Default::default(),
     });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 

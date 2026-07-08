@@ -138,6 +138,13 @@ impl Config {
         self.github_client_id.is_some() && self.github_client_secret.is_some()
     }
 
+    /// The site's canonical origin (`base_url` without a trailing slash), for
+    /// building absolute URLs — canonical links, OG tags, sitemaps, feeds.
+    /// Keeps self-hosted deploys portable: everything derives from `BASE_URL`.
+    pub fn site_url(&self) -> &str {
+        self.base_url.trim_end_matches('/')
+    }
+
     /// Fail-closed check for secrets that must be set before a live deploy.
     /// Returns an error (rather than silently running insecurely) when GitHub
     /// OAuth is enabled but `OAUTH_TOKEN_KEY` is still the compiled-in default.

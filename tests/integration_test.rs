@@ -2949,7 +2949,6 @@ async fn test_install_path_not_throttled_by_global_burst() {
     }
 }
 
-
 #[tokio::test]
 async fn test_429_has_actionable_retry_after() {
     // The rate limiter's sub-second replenish rounds Retry-After down to 0s,

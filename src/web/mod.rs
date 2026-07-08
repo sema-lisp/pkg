@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 use crate::{auth::get_session_user, dal, AppState};
 
+pub mod feeds;
+pub mod sitemap;
+
 fn render<T: Template>(tmpl: T) -> impl IntoResponse {
     match tmpl.render() {
         Ok(html) => Html(html).into_response(),
@@ -20,11 +23,26 @@ fn render<T: Template>(tmpl: T) -> impl IntoResponse {
     }
 }
 
+/// Build an XML response with an explicit content type and cache policy. Mirrors
+/// the header-tuple pattern used for other non-HTML responses (cf. the tarball
+/// download handler) since the `render` helper only produces `text/html`.
+pub(crate) fn respond_xml(body: String, cache_control: &'static str) -> axum::response::Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
+            (header::CACHE_CONTROL, cache_control),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 #[derive(Template)]
 #[template(path = "404.html")]
 pub struct NotFoundTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub heading: String,
     pub message: String,
     pub subject: Option<String>,
@@ -44,6 +62,7 @@ async fn render_not_found(
         render(NotFoundTemplate {
             username: si.username,
             is_admin: si.is_admin,
+            base_url: state.config.site_url().to_string(),
             heading: heading.to_string(),
             message: message.to_string(),
             subject,
@@ -147,6 +166,7 @@ pub struct TokenInfo {
 pub struct IndexTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub total_packages: i64,
     pub recent: Vec<PackageSummary>,
 }
@@ -156,6 +176,7 @@ pub struct IndexTemplate {
 pub struct SearchTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub query: String,
     pub packages: Vec<PackageSummary>,
     pub total: i64,
@@ -168,6 +189,7 @@ pub struct SearchTemplate {
 pub struct PackageTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub name: String,
     pub description: String,
     pub repository_url: Option<String>,
@@ -178,6 +200,8 @@ pub struct PackageTemplate {
     pub deps: Vec<DepInfo>,
     pub total_downloads: i64,
     pub readme_html: Option<String>,
+    /// Pre-serialized schema.org JSON-LD for the package (SoftwareSourceCode).
+    pub jsonld: Option<String>,
 }
 
 #[derive(Template)]
@@ -185,6 +209,7 @@ pub struct PackageTemplate {
 pub struct LoginTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub github_enabled: bool,
 }
 
@@ -193,6 +218,7 @@ pub struct LoginTemplate {
 pub struct LinkTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub github_connected: bool,
     pub github_login: Option<String>,
 }
@@ -202,6 +228,7 @@ pub struct LinkTemplate {
 pub struct AccountTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
     pub user_email: String,
     pub user_homepage: Option<String>,
     pub github_connected: bool,
@@ -215,6 +242,7 @@ pub struct AccountTemplate {
 pub struct AdminTemplate {
     pub username: Option<String>,
     pub is_admin: bool,
+    pub base_url: String,
 }
 
 // ── Handlers ──
@@ -232,6 +260,7 @@ pub async fn admin_page(
         Some(_) => render(AdminTemplate {
             username: si.username,
             is_admin: si.is_admin,
+            base_url: state.config.site_url().to_string(),
         })
         .into_response(),
     }
@@ -261,6 +290,7 @@ pub async fn index(
     render(IndexTemplate {
         username: si.username,
         is_admin: si.is_admin,
+        base_url: state.config.site_url().to_string(),
         total_packages,
         recent,
     })
@@ -303,6 +333,7 @@ pub async fn search(
     render(SearchTemplate {
         username: si.username,
         is_admin: si.is_admin,
+        base_url: state.config.site_url().to_string(),
         query,
         packages,
         total,
@@ -384,9 +415,31 @@ pub async fn package_detail(
 
     let total_downloads = dal::downloads::total(&state.db, &name).await.unwrap_or(0);
 
+    // schema.org JSON-LD for richer search results. Serialized with serde_json
+    // (handles escaping); `</` is further escaped so the payload can't break out
+    // of the surrounding <script> element.
+    let jsonld = {
+        let site = state.config.site_url();
+        let mut obj = serde_json::json!({
+            "@context": "https://schema.org",
+            "@type": "SoftwareSourceCode",
+            "name": &name,
+            "description": &description,
+            "url": format!("{site}/packages/{name}"),
+            "programmingLanguage": "Sema",
+        });
+        if let Some(repo) = &repository_url {
+            obj["codeRepository"] = serde_json::Value::String(repo.clone());
+        }
+        serde_json::to_string(&obj)
+            .ok()
+            .map(|s| s.replace("</", "<\\/"))
+    };
+
     render(PackageTemplate {
         username: si.username,
         is_admin: si.is_admin,
+        base_url: state.config.site_url().to_string(),
         name,
         description,
         repository_url,
@@ -397,6 +450,7 @@ pub async fn package_detail(
         deps,
         total_downloads,
         readme_html,
+        jsonld,
     })
     .into_response()
 }
@@ -413,6 +467,7 @@ pub async fn login(
     render(LoginTemplate {
         username: None,
         is_admin: false,
+        base_url: state.config.site_url().to_string(),
         github_enabled,
     })
     .into_response()
@@ -452,6 +507,7 @@ pub async fn link_page(
     render(LinkTemplate {
         username: Some(user.username),
         is_admin: user.is_admin,
+        base_url: state.config.site_url().to_string(),
         github_connected,
         github_login,
     })
@@ -530,6 +586,7 @@ pub async fn account(
     render(AccountTemplate {
         username: Some(user.username.clone()),
         is_admin: user.is_admin,
+        base_url: state.config.site_url().to_string(),
         user_email,
         user_homepage,
         github_connected,

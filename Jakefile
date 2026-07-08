@@ -94,6 +94,15 @@ task seed-stress:
     @needs cargo
     cargo run --features seed --bin seed -- --fresh --large
 
+# Sitemap/feed scale test. Overrides the --huge preset's package count to a full
+# 10M so the sitemap index (200 child chunks) and the feeds can be load tested.
+# Release build + deferred index rebuild keep the load bounded. Slow — minutes.
+@group db
+@desc "Seed ~10M packages for sitemap/feed load testing"
+task seed-10m:
+    @needs cargo
+    SEED_PACKAGES=10000000 cargo run --release --features seed --bin seed -- --fresh --huge
+
 @group db
 @desc "Delete the local DB + blobs so the next seed is fresh"
 task reset:

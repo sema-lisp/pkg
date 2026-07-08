@@ -13,17 +13,21 @@ pub mod github_sync;
 pub mod health;
 pub mod migration;
 pub mod ratelimit;
+pub mod syndication;
 pub mod tarball;
 pub mod telemetry;
 pub mod web;
 
+use axum::http::{header::CACHE_CONTROL, HeaderValue};
 use axum::{
     extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
     Router,
 };
 use std::sync::Arc;
+use tower::Layer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 /// Renders the current Prometheus metrics as an exposition-format string. An
@@ -39,6 +43,10 @@ pub struct AppState {
     pub metrics_render: Option<MetricsRender>,
     /// TTL cache for the admin dashboard summary.
     pub stats_cache: dal::admin::StatsCache,
+    /// TTL cache for the rendered sitemap index.
+    pub sitemap_cache: web::sitemap::SitemapCache,
+    /// TTL cache for the rendered recently-updated feeds (RSS + Atom).
+    pub recent_feed_cache: web::feeds::RecentFeedCache,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -57,11 +65,34 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/account", get(web::account))
         .route("/link", get(web::link_page))
         .route("/admin", get(web::admin_page))
+        // Crawlers + syndication: sitemap index, chunked child sitemaps, feeds.
+        .route("/robots.txt", get(web::sitemap::robots))
+        .route("/sitemap.xml", get(web::sitemap::sitemap_index))
+        .route("/sitemap/{chunk}", get(web::sitemap::sitemap_chunk))
+        .route("/feed/recent.xml", get(web::feeds::recent_rss))
+        .route("/feed/recent.atom", get(web::feeds::recent_atom))
+        .route("/feed/search.xml", get(web::feeds::search_rss))
+        .route("/feed/search.atom", get(web::feeds::search_atom))
         // GitHub OAuth
         .route("/auth/github", get(github::start))
         .route("/auth/github/callback", get(github::callback))
         // Static files
-        .nest_service("/static", ServeDir::new("static"));
+        .nest_service(
+            "/static/fonts",
+            SetResponseHeaderLayer::overriding(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            )
+            .layer(ServeDir::new("static/fonts")),
+        )
+        .nest_service(
+            "/static",
+            SetResponseHeaderLayer::overriding(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=3600"),
+            )
+            .layer(ServeDir::new("static")),
+        );
 
     // Prometheus scrape endpoint, only when metrics are enabled. Unlimited and
     // unauthenticated (scrape it on a private network / behind the proxy).

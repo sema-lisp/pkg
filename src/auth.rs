@@ -26,7 +26,9 @@ pub const OFFICIAL_USERNAMES: &[&str] = &["sema"];
 
 /// Whether a username belongs to an official (verified) account.
 pub fn is_official(username: &str) -> bool {
-    OFFICIAL_USERNAMES.iter().any(|u| u.eq_ignore_ascii_case(username))
+    OFFICIAL_USERNAMES
+        .iter()
+        .any(|u| u.eq_ignore_ascii_case(username))
 }
 
 pub fn hash_password(password: &str) -> String {

@@ -20,7 +20,12 @@ pub async fn update(
     crate::auth::validate_email(&body.email).map_err(ApiError::bad_request)?;
     // Validate the homepage only when one is actually supplied; a blank value
     // clears it and should not trip URL validation.
-    if let Some(hp) = body.homepage.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+    if let Some(hp) = body
+        .homepage
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
         crate::auth::validate_homepage(hp).map_err(ApiError::bad_request)?;
     }
     crate::dal::users::update_profile(

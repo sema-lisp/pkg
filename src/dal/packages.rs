@@ -132,6 +132,48 @@ pub async fn count<C: ConnectionTrait>(db: &C) -> i64 {
     package::Entity::find().count(db).await.unwrap_or(0) as i64
 }
 
+/// The largest package id, or 0 when the table is empty. An index-max probe on
+/// the primary key (O(1)) — used to size the sitemap index without paying for a
+/// `COUNT(*)` full scan at 10M rows.
+pub async fn max_id<C: ConnectionTrait>(db: &C) -> i64 {
+    let backend = db.get_database_backend();
+    let row = db
+        .query_one(crate::db::stmt(
+            backend,
+            "SELECT MAX(id) AS m FROM packages",
+            Vec::<sea_orm::Value>::new(),
+        ))
+        .await
+        .ok()
+        .flatten();
+    row.and_then(|r| crate::db::row_get_i64(&r, "m"))
+        .unwrap_or(0)
+}
+
+/// One sitemap chunk: packages with `lo < id <= hi`, ascending by id. A pure
+/// primary-key range scan (no joins, no correlated subqueries), so it stays
+/// bounded and flat regardless of table size. Returns `(id, name, created_at)`.
+pub async fn id_chunk<C: ConnectionTrait>(db: &C, lo: i64, hi: i64) -> Vec<(i64, String, String)> {
+    let backend = db.get_database_backend();
+    let rows = db
+        .query_all(crate::db::stmt(
+            backend,
+            "SELECT id, name, created_at FROM packages WHERE id > ? AND id <= ? ORDER BY id",
+            [lo.into(), hi.into()],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.iter()
+        .map(|r| {
+            (
+                crate::db::row_get_i64(r, "id").unwrap_or(0),
+                r.try_get("", "name").unwrap_or_default(),
+                r.try_get("", "created_at").unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// A package summary row for server-rendered listings:
 /// `(name, description, latest_version, published_at)`.
 pub type ListingRow = (String, String, String, String);

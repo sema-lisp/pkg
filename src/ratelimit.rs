@@ -89,7 +89,11 @@ where
     if !config.rate_limit_enabled {
         return router;
     }
-    apply(router, config.rate_limit_read_rps, config.rate_limit_read_burst)
+    apply(
+        router,
+        config.rate_limit_read_rps,
+        config.rate_limit_read_burst,
+    )
 }
 
 /// Apply the stricter **auth** rate limit to `router`, unless disabled in config.
