@@ -35,6 +35,9 @@ aes-gcm = "0.10"
 toml = "1.1"
 hmac = "0.12"
 comrak = { version = "0.36", default-features = false, features = ["syntect"] }
+# Same syntect comrak uses (5.3), so we can add the canonical Sema grammar to
+# the README highlighter's syntax set.
+syntect = "5.3"
 # Decode uploaded package tarballs to extract the README for the package page.
 flate2 = "1"
 tar = "0.4"

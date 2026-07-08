@@ -216,54 +216,31 @@ pub async fn fetch_readme(
     }
 }
 
-/// Sema has no syntect grammar of its own; it's a Scheme-like Lisp, so rewrite
-/// ` ```sema ` fences to a Lisp grammar for syntax highlighting. `LISP_LANG` is
-/// resolved once to whichever Lisp family the bundled syntax set actually has.
-fn alias_code_fences(markdown: &str) -> String {
-    markdown
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            let indent = &line[..line.len() - trimmed.len()];
-            for fence in ["```sema", "~~~sema"] {
-                if trimmed == fence {
-                    return format!("{indent}{}{}", &fence[..3], lisp_lang());
-                }
-            }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The syntect language token to highlight Sema with — the first Lisp-family
-/// grammar the bundled syntax set provides.
-fn lisp_lang() -> &'static str {
-    use comrak::plugins::syntect::SyntectAdapter;
+/// The syntect syntax set: syntect's defaults plus the canonical Sema grammar
+/// (the same `.sublime-syntax` the editors use, whose scopes mirror the website's
+/// TextMate grammar), so ` ```sema ` fences highlight with the real Sema grammar.
+fn syntax_set() -> &'static syntect::parsing::SyntaxSet {
     use std::sync::OnceLock;
-    static LANG: OnceLock<&'static str> = OnceLock::new();
-    LANG.get_or_init(|| {
-        // Render a tiny snippet under each candidate; the first that produces
-        // highlight spans wins. Falls back to "scheme" (still emits a class).
-        let probe = |lang: &str| -> bool {
-            let md = format!("```{lang}\n(a b)\n```\n");
-            let adapter = SyntectAdapter::new(Some("base16-ocean.dark"));
-            let mut plugins = comrak::Plugins::default();
-            plugins.render.codefence_syntax_highlighter = Some(&adapter);
-            comrak::markdown_to_html_with_plugins(&md, &comrak::Options::default(), &plugins)
-                .contains("style=\"color")
-        };
-        ["clojure", "scheme", "lisp", "racket", "newlisp"]
-            .into_iter()
-            .find(|l| probe(l))
-            .unwrap_or("scheme")
+    use syntect::parsing::{SyntaxDefinition, SyntaxSet};
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(|| {
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        match SyntaxDefinition::load_from_str(
+            include_str!("../syntaxes/Sema.sublime-syntax"),
+            true,
+            Some("Sema"),
+        ) {
+            Ok(def) => builder.add(def),
+            Err(e) => tracing::error!("failed to load Sema syntax: {e}"),
+        }
+        builder.build()
     })
 }
 
 /// Render a Markdown README to HTML using comrak (GitHub Flavored Markdown) with
 /// syntect syntax highlighting.
 pub fn render_readme(markdown: &str) -> String {
-    use comrak::plugins::syntect::SyntectAdapter;
+    use comrak::plugins::syntect::SyntectAdapterBuilder;
     use comrak::{markdown_to_html_with_plugins, Options, Plugins};
 
     let mut options = Options::default();
@@ -274,11 +251,13 @@ pub fn render_readme(markdown: &str) -> String {
     options.extension.header_ids = Some(String::new());
     options.render.unsafe_ = false;
 
-    let md = alias_code_fences(markdown);
-    let adapter = SyntectAdapter::new(Some("base16-ocean.dark"));
+    let adapter = SyntectAdapterBuilder::new()
+        .theme("base16-ocean.dark")
+        .syntax_set(syntax_set().clone())
+        .build();
     let mut plugins = Plugins::default();
     plugins.render.codefence_syntax_highlighter = Some(&adapter);
-    let html = markdown_to_html_with_plugins(&md, &options, &plugins);
+    let html = markdown_to_html_with_plugins(markdown, &options, &plugins);
     strip_pre_background(&html)
 }
 
@@ -389,8 +368,7 @@ mod readme_tests {
             html.contains("style=\"color"),
             "expected syntect color spans, got:\n{html}"
         );
-        eprintln!("LISP_LANG chosen for sema = {}", lisp_lang());
-        // The sema block (aliased to a Lisp grammar) must be highlighted too:
+        // The sema block must be highlighted by the real Sema grammar:
         // find the last <pre> (the sema one) and confirm it has color spans.
         let last_pre = html.rfind("<pre").map(|i| &html[i..]).unwrap_or("");
         assert!(
