@@ -43,7 +43,6 @@ mod tests {
     use super::*;
     use flate2::write::GzEncoder;
     use flate2::Compression;
-    use std::io::Write;
 
     fn make_targz(files: &[(&str, &str)]) -> Vec<u8> {
         let enc = GzEncoder::new(Vec::new(), Compression::default());

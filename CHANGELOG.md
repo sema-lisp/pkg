@@ -14,7 +14,7 @@ steps required.
 
 - **README rendering for uploaded packages.** On publish, the registry now
   extracts `README.md` from the package tarball and renders it on the package
-  page (previously only GitHub-linked packages showed a README). Adds
+  page (previously only GitHub-linked packages showed a README). Code blocks are syntax-highlighted (syntect); `sema` fences use a Lisp grammar. Adds
   `sema-pkg package backfill-readmes` to populate it for packages published
   before this. The official badge is now a single aligned verified-seal icon
   (no misaligned pill).
