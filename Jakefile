@@ -34,19 +34,12 @@ task check:
 @desc "Seed a fresh DB, then start the registry (cargo) (params: port=3000)"
 task dev port="3000": [reset]
     @needs cargo
-    start={{port}}; p=$start; \
-    while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; \
-    base="http://localhost:$p"; \
-    [ "$p" = "$start" ] || echo "Port $start is busy — using $p instead."; \
-    echo "Seeding a fresh dev database..."; \
-    BASE_URL="$base" cargo run --features seed --bin seed -- --fresh; \
-    echo "Starting sema-pkg on $base (Ctrl-C to stop)..."; \
-    PORT="$p" BASE_URL="$base" cargo run
+    start={{port}}; p=$start; while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; base="http://localhost:$p"; [ "$p" = "$start" ] || echo "Port $start is busy — using $p instead."; echo "Seeding a fresh dev database..."; BASE_URL="$base" cargo run --features seed --bin seed -- --fresh; echo "Starting sema-pkg on $base (Ctrl-C to stop)..."; PORT="$p" BASE_URL="$base" cargo run --bin sema-pkg
 
 @group dev
 @desc "Start the registry without resetting or seeding"
 task run:
-    cargo run
+    cargo run --bin sema-pkg
 
 # OpenTelemetry request+DB tracing to a JSONL file. Each span
 # (request → handler → query) is one line in the file.
@@ -54,7 +47,7 @@ task run:
 @desc "Run the registry with OpenTelemetry tracing to a file (params: out=traces.jsonl)"
 task trace out="traces.jsonl":
     @needs cargo
-    OTEL_TRACES_EXPORTER=file OTEL_TRACE_FILE={{out}} cargo run --release
+    OTEL_TRACES_EXPORTER=file OTEL_TRACE_FILE={{out}} cargo run --release --bin sema-pkg
 
 @group dev
 @desc "Seed a fresh DB, build + start in Docker, then tail logs (params: port=3000)"
@@ -62,16 +55,7 @@ task docker port="3000": [reset]
     @needs docker
     @needs cargo
     docker compose down 2>/dev/null || true
-    start={{port}}; p=$start; \
-    while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; \
-    base="http://localhost:$p"; \
-    [ "$p" = "$start" ] || echo "Host port $start is busy — using $p instead."; \
-    echo "Seeding ./data before the container opens it..."; \
-    DATABASE_URL="sqlite://data/registry.db?mode=rwc" BLOB_DIR="data/blobs" BASE_URL="$base" \
-      cargo run --features seed --bin seed -- --fresh; \
-    PORT="$p" BASE_URL="$base" docker compose up --build -d; \
-    echo "Registry running in Docker at $base — 'jake pkg.down' to stop it."; \
-    PORT="$p" docker compose logs -f
+    start={{port}}; p=$start; while lsof -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1; do p=$((p+1)); done; base="http://localhost:$p"; [ "$p" = "$start" ] || echo "Host port $start is busy — using $p instead."; echo "Seeding ./data before the container opens it..."; DATABASE_URL="sqlite://data/registry.db?mode=rwc" BLOB_DIR="data/blobs" BASE_URL="$base" cargo run --features seed --bin seed -- --fresh; PORT="$p" BASE_URL="$base" docker compose up --build -d; echo "Registry running in Docker at $base — 'jake pkg.down' to stop it."; PORT="$p" docker compose logs -f
 
 @group dev
 @desc "Stop the Docker registry"
