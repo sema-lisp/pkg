@@ -104,7 +104,7 @@ task clean: [reset]
 @group test
 @desc "Run the Rust test suite"
 task test:
-    cargo test
+    cargo nextest run
 
 @group test
 @desc "Playwright end-to-end tests (params: headed=--headed for a visible browser)"
