@@ -87,20 +87,20 @@ contexts:
   # ---------------------------------------------------------------------
   definition:
     # (define (name args...) ...) — must come before the simple-define rule
-    - match: '(\()\s*(define)\s+(\()\s*([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
+    - match: '(\()\s*(define|def)\s+(\()\s*([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
       captures:
         1: punctuation.paren.open.sema
         2: keyword.control.definition.sema
         3: punctuation.paren.open.sema
         4: entity.name.function.sema
     # (define name ...)
-    - match: '(\()\s*(define)\s+([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
+    - match: '(\()\s*(define|def)\s+([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
       captures:
         1: punctuation.paren.open.sema
         2: keyword.control.definition.sema
         3: variable.other.sema
     # (defun|defmacro|... name ...)
-    - match: '(\()\s*(defun|defmacro|defmulti|defmethod|defagent|deftool|defn|def|defworkflow|define-record-type)\s+([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
+    - match: '(\()\s*(defun|defmacro|defmulti|defmethod|defagent|deftool|defn|defworkflow|define-record-type)\s+([\w!$%&*+\-./:<=>?@^~][\w!$%&*+\-./:<=>?@^~0-9]*)'
       captures:
         1: punctuation.paren.open.sema
         2: keyword.control.definition.sema
