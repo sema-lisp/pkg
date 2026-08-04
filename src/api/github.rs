@@ -123,18 +123,14 @@ pub async fn link(
     let mut imported = 0u32;
     let mut errors = Vec::new();
 
+    let access = github_sync::RepoAccess {
+        client: &client,
+        token: &token,
+        owner: &owner_name,
+        repo: &repo,
+    };
     for (tag_name, version) in &tags {
-        match github_sync::sync_tag(
-            &state.db,
-            &owner_name,
-            &repo,
-            tag_name,
-            version,
-            package_id,
-            manifest.sema_version_req.as_deref(),
-        )
-        .await
-        {
+        match github_sync::sync_tag(&state.db, &access, tag_name, version, package_id).await {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
@@ -210,18 +206,14 @@ pub async fn sync(
     };
 
     let mut imported = 0u32;
+    let access = github_sync::RepoAccess {
+        client: &client,
+        token: &token,
+        owner: &owner_name,
+        repo: &repo,
+    };
     for (tag_name, version) in &tags {
-        match github_sync::sync_tag(
-            &state.db,
-            &owner_name,
-            &repo,
-            tag_name,
-            version,
-            package_id,
-            None,
-        )
-        .await
-        {
+        match github_sync::sync_tag(&state.db, &access, tag_name, version, package_id).await {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
@@ -339,17 +331,31 @@ pub async fn webhook(
     let (owner_name, repo) = github_sync::parse_github_url(repo_full_name)
         .ok_or_else(|| ApiError::bad_request("Invalid repo name"))?;
 
-    match github_sync::sync_tag(
-        &state.db,
-        &owner_name,
-        &repo,
-        tag_name,
-        &version,
-        package_id,
-        None,
-    )
-    .await
-    {
+    // The webhook has no authenticated user, so read the repo with an owner's stored
+    // GitHub token. Without it the tag's sema_version_req cannot be read at all.
+    let owner_user_id = dal::owners::first_user_id(&state.db, package_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::forbidden("Package has no owner"))?;
+    let token =
+        github_sync::get_github_token(&state.db, owner_user_id, &state.config.oauth_token_key)
+            .await
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "Package owner has no active GitHub connection",
+                )
+            })?;
+    let client = reqwest::Client::new();
+    let access = github_sync::RepoAccess {
+        client: &client,
+        token: &token,
+        owner: &owner_name,
+        repo: &repo,
+    };
+
+    match github_sync::sync_tag(&state.db, &access, tag_name, &version, package_id).await {
         Ok(true) => {
             tracing::info!("Webhook: synced {repo_full_name} tag {tag_name} as {version}");
             crate::audit::log(

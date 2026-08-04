@@ -249,6 +249,81 @@ async fn test_publish_and_get_package() {
 }
 
 #[tokio::test]
+async fn test_sema_version_req_survives_publish_and_is_served_under_that_key() {
+    // The `sema pkg` client reads versions[].sema_version_req from this response and
+    // refuses an incompatible install. If the key is renamed, dropped, or left out of
+    // the query, the client silently stops enforcing, so pin the name and the value.
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "reqpub", "req@example.com").await;
+    let token = create_api_token(app.clone(), &session, "req-token").await;
+
+    let meta = serde_json::json!({
+        "description": "requirement carrier",
+        "sema_version_req": "  >=1.34.0  ",
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "req-pkg",
+        "1.0.0",
+        &gzip(b"tarball"),
+        &serde_json::to_string(&meta).unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/req-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    // Stored normalized (trimmed), served under exactly this key.
+    assert_eq!(body["versions"][0]["sema_version_req"], ">=1.34.0");
+}
+
+#[tokio::test]
+async fn test_publish_rejects_an_invalid_sema_version_req() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "badreq", "badreq@example.com").await;
+    let token = create_api_token(app.clone(), &session, "badreq-token").await;
+
+    let meta = serde_json::json!({
+        "description": "bad requirement",
+        "sema_version_req": "not a requirement",
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "badreq-pkg",
+        "1.0.0",
+        &gzip(b"tarball"),
+        &serde_json::to_string(&meta).unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // The rejected publish must not have created the package.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/badreq-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn test_publish_duplicate_version() {
     let (app, _dir) = test_app().await;
     let session = register_user(app.clone(), "dup-pub", "dup@example.com").await;

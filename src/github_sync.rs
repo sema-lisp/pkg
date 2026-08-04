@@ -169,19 +169,87 @@ pub async fn list_semver_tags(
     Ok(tags)
 }
 
+/// Everything needed to read one GitHub repository.
+///
+/// Grouping these keeps the owner, repo, and tag from being transposed at a call site
+/// where they are all `&str`.
+pub struct RepoAccess<'a> {
+    pub client: &'a reqwest::Client,
+    pub token: &'a str,
+    pub owner: &'a str,
+    pub repo: &'a str,
+}
+
+/// Read `[package].sema_version_req` from `sema.toml` at one tag.
+///
+/// A tag with no readable `sema.toml` declares no requirement — tags older than the
+/// manifest are normal, and a fetch failure must not block the import. A manifest that
+/// IS readable but holds an invalid requirement is an error, so the maintainer sees it
+/// in the sync log instead of the release silently losing its constraint.
+async fn fetch_tag_sema_version_req(
+    access: &RepoAccess<'_>,
+    tag_name: &str,
+) -> Result<Option<String>, String> {
+    let RepoAccess {
+        client,
+        token,
+        owner,
+        repo,
+    } = access;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/sema.toml");
+    let resp = client
+        .get(url)
+        // `.query` percent-encodes, so a tag like `release/1.0` stays one parameter.
+        .query(&[("ref", tag_name)])
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "sema-pkg")
+        .header("Accept", "application/vnd.github.raw+json")
+        .send()
+        .await;
+    let Ok(resp) = resp else {
+        return Ok(None);
+    };
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let Ok(content) = resp.text().await else {
+        return Ok(None);
+    };
+    tag_sema_version_req(&content, tag_name)
+}
+
+/// Extract and validate `[package].sema_version_req` from one tag's `sema.toml`.
+///
+/// An unparsable manifest declares no requirement: `sema.toml` is not required to be
+/// valid TOML at every historic tag, and refusing the tag would block the import. A
+/// manifest that parses but holds a bad requirement is an error, so the maintainer sees
+/// it instead of the release silently losing its constraint.
+fn tag_sema_version_req(content: &str, tag_name: &str) -> Result<Option<String>, String> {
+    let Ok(document) = toml::from_str::<toml::Value>(content) else {
+        return Ok(None);
+    };
+    let Some(value) = document
+        .get("package")
+        .and_then(|package| package.get("sema_version_req"))
+    else {
+        return Ok(None);
+    };
+    let requirement = value
+        .as_str()
+        .ok_or_else(|| format!("{tag_name}: sema_version_req must be a string"))?;
+    validate_sema_version_req(Some(requirement)).map_err(|error| format!("{tag_name}: {error}"))
+}
+
 /// Sync a single tag: store metadata and GitHub tarball URL (no blob download).
 /// Returns Ok(true) if version was created, Ok(false) if it already existed.
 pub async fn sync_tag(
     db: &Db,
-    owner: &str,
-    repo: &str,
+    access: &RepoAccess<'_>,
     tag_name: &str,
     version: &semver::Version,
     package_id: i64,
-    sema_version_req: Option<&str>,
 ) -> Result<bool, String> {
     let version_str = version.to_string();
-    let sema_version_req = validate_sema_version_req(sema_version_req)?;
 
     // Check if version already exists
     let exists = crate::dal::versions::exists(db, package_id, &version_str)
@@ -192,6 +260,11 @@ pub async fn sync_tag(
         return Ok(false);
     }
 
+    // Read the requirement from the manifest at this tag, not from the default branch:
+    // each release states its own, and editing the field must not rewrite past releases.
+    let sema_version_req = fetch_tag_sema_version_req(access, tag_name).await?;
+
+    let (owner, repo) = (access.owner, access.repo);
     let tarball_url = format!("https://api.github.com/repos/{owner}/{repo}/tarball/{tag_name}");
 
     crate::dal::versions::create_github_version(
@@ -505,6 +578,44 @@ mod manifest_tests {
         )
         .unwrap_err();
         assert_eq!(error, "sema_version_req must be a string");
+    }
+
+    #[test]
+    fn tag_manifest_reads_the_requirement_at_that_tag() {
+        let content = "[package]\nname = \"policies\"\nsema_version_req = \"  >=1.34.0  \"\n";
+        assert_eq!(
+            tag_sema_version_req(content, "v1.0.0").unwrap(),
+            Some(">=1.34.0".to_string())
+        );
+    }
+
+    #[test]
+    fn tag_manifest_without_a_requirement_is_absent_not_an_error() {
+        // A tag older than the field, or older than sema.toml itself, must still import.
+        assert_eq!(
+            tag_sema_version_req("[package]\nname = \"policies\"\n", "v0.1.0").unwrap(),
+            None
+        );
+        assert_eq!(tag_sema_version_req("", "v0.1.0").unwrap(), None);
+        assert_eq!(
+            tag_sema_version_req("not : valid : toml", "v0.1.0").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn tag_manifest_with_a_bad_requirement_names_the_tag() {
+        let error = tag_sema_version_req(
+            "[package]\nsema_version_req = \"not a requirement\"\n",
+            "v1.2.3",
+        )
+        .unwrap_err();
+        assert!(error.starts_with("v1.2.3: "), "{error}");
+        assert!(error.contains("Invalid sema_version_req"), "{error}");
+
+        let error =
+            tag_sema_version_req("[package]\nsema_version_req = 34\n", "v1.2.3").unwrap_err();
+        assert_eq!(error, "v1.2.3: sema_version_req must be a string");
     }
 
     #[test]
