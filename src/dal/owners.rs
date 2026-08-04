@@ -40,6 +40,26 @@ pub async fn package_id_if_owner<C: ConnectionTrait>(
     Ok(row.and_then(|r| r.try_get("", "id").ok()))
 }
 
+/// The lowest owner user id for `package_id`, if the package has an owner.
+///
+/// The webhook runs with no authenticated user, so it needs an owner's stored GitHub
+/// token to read the repo. Ordering by id keeps the choice stable as owners change.
+pub async fn first_user_id<C: ConnectionTrait>(
+    db: &C,
+    package_id: i64,
+) -> Result<Option<i64>, DbErr> {
+    let row = db
+        .query_one(crate::db::stmt(
+            db.get_database_backend(),
+            r#"SELECT o.user_id FROM owners o
+               WHERE o.package_id = ?
+               ORDER BY o.user_id ASC"#,
+            [package_id.into()],
+        ))
+        .await?;
+    Ok(row.and_then(|r| r.try_get("", "user_id").ok()))
+}
+
 /// Usernames of every owner of `package_id`.
 pub async fn list_usernames<C: ConnectionTrait>(
     db: &C,

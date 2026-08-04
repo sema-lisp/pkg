@@ -218,6 +218,12 @@ GitHub-linked releases. Clients use it to skip incompatible versions during
 unversioned installs and to reject incompatible explicit or locked installs
 before replacing local package files.
 
+For a GitHub-linked package the requirement is read from `sema.toml` **at each
+tag**, so every release records the requirement it was published with and
+editing the field does not rewrite past releases. A tag whose `sema.toml` is
+missing or unreadable records no requirement; a tag whose `sema.toml` parses but
+holds an invalid requirement is reported in the package's sync log.
+
 ### Source Locking
 
 A package is either **CLI-uploaded** or **GitHub-linked**, never both. Once a package is linked to a repo, it cannot be published via `sema publish`, and vice versa.
