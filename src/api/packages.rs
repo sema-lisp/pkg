@@ -156,6 +156,9 @@ pub async fn publish(
             )));
         }
     }
+    metadata.sema_version_req =
+        crate::github_sync::validate_sema_version_req(metadata.sema_version_req.as_deref())
+            .map_err(ApiError::bad_request)?;
 
     // Ownership / source checks (reads; the writes below run in one transaction)
     let existing = dal::packages::find_by_name(&state.db, &name)

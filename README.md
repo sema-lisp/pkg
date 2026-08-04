@@ -204,6 +204,20 @@ Link a GitHub repository to automatically publish packages from semver tags.
 
 Git tags are mapped to package versions: `v1.0.0` → `1.0.0`. Tags that don't match semver (e.g., `nightly`, `latest`) are skipped.
 
+### Sema Version Compatibility
+
+Packages may declare a SemVer requirement in `sema.toml`:
+
+```toml
+[package]
+sema_version_req = ">=1.34.0"
+```
+
+The registry validates and normalizes this field for both CLI uploads and
+GitHub-linked releases. Clients use it to skip incompatible versions during
+unversioned installs and to reject incompatible explicit or locked installs
+before replacing local package files.
+
 ### Source Locking
 
 A package is either **CLI-uploaded** or **GitHub-linked**, never both. Once a package is linked to a repo, it cannot be published via `sema publish`, and vice versa.

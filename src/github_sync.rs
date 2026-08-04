@@ -1,5 +1,17 @@
 use crate::{crypto, db::Db};
 
+pub fn validate_sema_version_req(requirement: Option<&str>) -> Result<Option<String>, String> {
+    let Some(requirement) = requirement.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if requirement.len() > 128 {
+        return Err("sema_version_req must be at most 128 characters".to_string());
+    }
+    semver::VersionReq::parse(requirement)
+        .map_err(|error| format!("Invalid sema_version_req {requirement:?}: {error}"))?;
+    Ok(Some(requirement.to_string()))
+}
+
 /// Fetch the decrypted GitHub access token for a user.
 pub async fn get_github_token(db: &Db, user_id: i64, token_key: &str) -> Option<String> {
     let row = crate::dal::oauth::find_active(db, user_id).await.ok()??;
@@ -89,10 +101,13 @@ fn parse_manifest(content: &str) -> Result<RepoManifest, String> {
         .get("repository")
         .and_then(toml::Value::as_str)
         .map(str::to_string);
-    let sema_version_req = pkg
-        .get("sema_version_req")
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
+    let sema_version_req = match pkg.get("sema_version_req") {
+        None => None,
+        Some(value) => {
+            let requirement = value.as_str().ok_or("sema_version_req must be a string")?;
+            validate_sema_version_req(Some(requirement))?
+        }
+    };
     Ok(RepoManifest {
         name: name.to_string(),
         description,
@@ -166,6 +181,7 @@ pub async fn sync_tag(
     sema_version_req: Option<&str>,
 ) -> Result<bool, String> {
     let version_str = version.to_string();
+    let sema_version_req = validate_sema_version_req(sema_version_req)?;
 
     // Check if version already exists
     let exists = crate::dal::versions::exists(db, package_id, &version_str)
@@ -183,7 +199,7 @@ pub async fn sync_tag(
         package_id,
         &version_str,
         tarball_url,
-        sema_version_req.map(String::from),
+        sema_version_req,
     )
     .await
     .map_err(|e| format!("Failed to insert version: {e}"))?;
@@ -445,6 +461,58 @@ mod readme_tests {
             !html.contains("background-color"),
             "syntect theme background should be stripped:\n{html}"
         );
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_rejects_invalid_sema_version_requirement() {
+        let error = parse_manifest(
+            r#"
+            [package]
+            name = "policies"
+            sema_version_req = "not a requirement"
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid sema_version_req"));
+    }
+
+    #[test]
+    fn manifest_normalizes_valid_sema_version_requirement() {
+        let manifest = parse_manifest(
+            r#"
+            [package]
+            name = "policies"
+            sema_version_req = "  >=1.34.0  "
+            "#,
+        )
+        .unwrap();
+        assert_eq!(manifest.sema_version_req.as_deref(), Some(">=1.34.0"));
+    }
+
+    #[test]
+    fn manifest_rejects_non_string_sema_version_requirement() {
+        let error = parse_manifest(
+            r#"
+            [package]
+            name = "policies"
+            sema_version_req = 34
+            "#,
+        )
+        .unwrap_err();
+        assert_eq!(error, "sema_version_req must be a string");
+    }
+
+    #[test]
+    fn validator_treats_blank_as_absent_and_limits_length() {
+        assert_eq!(validate_sema_version_req(Some("  ")).unwrap(), None);
+        let requirement = format!(">={}", "1".repeat(128));
+        let error = validate_sema_version_req(Some(&requirement)).unwrap_err();
+        assert!(error.contains("at most 128 characters"));
     }
 }
 
