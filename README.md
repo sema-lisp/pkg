@@ -1,4 +1,16 @@
+<div align="center">
+
+<img src="https://sema-lang.com/logo.svg" alt="Sema" height="64">
+
 # sema-pkg
+
+**Package registry for [Sema](https://sema-lang.com)** — a Lisp with first-class LLM primitives.
+
+[![CI](https://img.shields.io/github/actions/workflow/status/sema-lisp/pkg/ci.yml?branch=main&label=CI&logo=github)](https://github.com/sema-lisp/pkg/actions)
+[![License](https://img.shields.io/github/license/sema-lisp/pkg?color=c8a855)](LICENSE.md)
+[![Website](https://img.shields.io/badge/website-sema--lang.com-c8a855)](https://sema-lang.com)
+
+</div>
 
 Self-hostable package registry for the [Sema](https://sema-lang.com) programming language. Ships as a single binary with SQLite, serves both a web UI and a REST API for CLI clients.
 
