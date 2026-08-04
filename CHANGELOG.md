@@ -3,7 +3,7 @@
 All notable changes to sema-pkg are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-04
 
 Production-readiness pass: durability, observability, operability, and scale.
 
@@ -64,6 +64,11 @@ steps required.
 - **Tigris / AWS-style env fallback** — S3 blob config auto-detects the
   `BUCKET_NAME` / `AWS_*` variables injected by Fly Tigris, so no manual
   `BLOB_S3_*` mapping is needed on Fly.io.
+- **Sema version requirements (`sema_version_req`).** A package may declare the
+  Sema versions it supports in `sema.toml`. The registry validates and
+  normalizes the requirement on CLI publish and on GitHub tag import, rejecting
+  a malformed one with a 400 rather than storing it, and serves it per version
+  so `sema pkg` can skip or refuse an incompatible install.
 
 ### Changed
 
@@ -85,6 +90,15 @@ steps required.
 
 ### Fixed
 
+- **GitHub-linked releases kept no `sema_version_req`.** `sync_tag` received the
+  requirement as a parameter and only the link handler supplied one, so the sync
+  endpoint and the webhook — the normal release flow — stored NULL, which
+  clients read as "no requirement". The link path had the opposite problem: it
+  applied the default branch's `sema.toml` to every historic tag, so editing the
+  field rewrote past releases. The requirement is now read from `sema.toml` at
+  each tag, so every release records what it was published with. A tag with no
+  readable `sema.toml` records no requirement; a tag whose manifest parses but
+  holds an invalid requirement is reported in the package's sync log.
 - Package removal now reclaims orphaned blobs (dedup-safe: a content-addressed
   blob is only deleted when no remaining version references it). Yank keeps the
   blob.
