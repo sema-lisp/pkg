@@ -257,6 +257,25 @@ impl FromRequestParts<Arc<AppState>> for TokenUser {
     }
 }
 
+/// Extractor: the authenticated user via either a session cookie or a
+/// Bearer API token — for endpoints that serve both the web UI and the CLI.
+pub struct AnyAuth(pub User);
+
+impl FromRequestParts<Arc<AppState>> for AnyAuth {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        if let Ok(AuthUser(user)) = AuthUser::from_request_parts(parts, state).await {
+            return Ok(AnyAuth(user));
+        }
+        let TokenUser { user, .. } = TokenUser::from_request_parts(parts, state).await?;
+        Ok(AnyAuth(user))
+    }
+}
+
 /// Extractor: requires session auth + is_admin = 1
 pub struct AdminUser(pub User);
 

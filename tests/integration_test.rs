@@ -149,6 +149,62 @@ async fn test_register_validation() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+// ── /me Tests ──
+
+#[tokio::test]
+async fn test_me_with_session() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "meuser", "me@example.com").await;
+
+    let res = get_with_session(app.clone(), "/api/v1/me", &session).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert_eq!(body["username"], "meuser");
+    assert_eq!(body["email"], "me@example.com");
+    assert_eq!(body["is_admin"], false);
+    assert_eq!(body["is_official"], false);
+}
+
+#[tokio::test]
+async fn test_me_with_api_token() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "metoken", "metoken@example.com").await;
+    let token = create_api_token(app.clone(), &session, "me-token").await;
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/me")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert_eq!(body["username"], "metoken");
+}
+
+#[tokio::test]
+async fn test_me_unauthenticated() {
+    let (app, _dir) = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/me")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
 // ── Token Tests ──
 
 #[tokio::test]

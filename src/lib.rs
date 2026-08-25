@@ -127,6 +127,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/logout", post(api::auth::logout))
         // Account
         .route("/api/v1/account", put(api::account::update))
+        .route("/api/v1/me", get(api::account::me))
         // Tokens API
         .route(
             "/api/v1/tokens",

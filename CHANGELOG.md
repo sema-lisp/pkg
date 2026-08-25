@@ -3,6 +3,15 @@
 All notable changes to sema-pkg are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- `GET /api/v1/me` — returns the authenticated account (`id`, `username`,
+  `email`, `is_admin`, `is_official`) for either credential: a web session
+  cookie or a Bearer API token. Lets the CLI answer "whose token is
+  configured?" before publishing.
+
 ## [0.2.0] - 2026-08-04
 
 Production-readiness pass: durability, observability, operability, and scale.
