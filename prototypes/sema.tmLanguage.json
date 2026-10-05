@@ -10,6 +10,9 @@
       "include": "#comment"
     },
     {
+      "include": "#regex"
+    },
+    {
       "include": "#string"
     },
     {
@@ -50,6 +53,17 @@
     }
   ],
   "repository": {
+    "regex": {
+      "name": "string.regexp.sema",
+      "begin": "#\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "string.regexp.sema",
+          "match": "\\\\."
+        }
+      ]
+    },
     "block-comment": {
       "name": "comment.block.sema",
       "begin": "#\\|",
