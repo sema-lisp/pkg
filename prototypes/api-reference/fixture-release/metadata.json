@@ -1,0 +1,17 @@
+{
+  "package": "sema-retry",
+  "description": "Retry with exponential backoff, circuit breaker, and rate limiting",
+  "repository_url": "https://github.com/sema-lisp/packages",
+  "version": "0.1.0",
+  "checksum_sha256": "ea1f177349994e1cfc0684dfc796063ac389a583448f6b1a574c9b4595dcf82e",
+  "extracted_file_sha256": {
+    "package.sema": "031c56d38f481a90d742e50053d53300c45fc4f89226f61f6ae0b52dc2b0e2bf",
+    "sema.toml": "ac701e60f7502dcfba74caa86a149bea2b68fee894d1541d8eadd1bdb834af95",
+    "README.md": "3349914db4256c8227c1542209ec6037eec5e62775e00fe0de4bdee74470a216"
+  },
+  "size_bytes": 8115,
+  "published_at": "2026-07-07 21:28:14",
+  "yanked": false,
+  "sema_version_req": null,
+  "download_url": "https://pkg.sema-lang.com/api/v1/packages/sema-retry/0.1.0/download"
+}

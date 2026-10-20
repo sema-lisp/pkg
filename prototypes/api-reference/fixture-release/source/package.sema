@@ -1,0 +1,223 @@
+;; sema-retry — retry with exponential backoff, circuit breaker, and rate limiting
+;;
+;; Resilience combinators for flaky calls (http/, llm/, shell). Modeled on
+;; Clojure's diehard: retry policies, a circuit breaker, and a token-bucket
+;; rate limiter, all as plain functions over thunks.
+
+(module sema-retry
+  (export retry/with-retry
+          retry/backoff-delays
+          retry/circuit-breaker
+          retry/with-breaker
+          retry/breaker-state
+          retry/rate-limiter
+          retry/with-limit
+          retry/try-acquire!
+          retry/with-timeout)
+
+  ;; ---------------------------------------------------------------------
+  ;; Private: options & delay math
+  ;; ---------------------------------------------------------------------
+
+  (define retry-defaults
+    {:max-attempts 3
+     :initial-delay 200
+     :max-delay 10000
+     :multiplier 2.0
+     :jitter 0.2})
+
+  (define (opt o key)
+    (get o key (get retry-defaults key)))
+
+  ;; Pre-jitter delay (ms) after failed attempt `attempt` (1-based):
+  ;; initial-delay * multiplier^(attempt-1), capped at max-delay.
+  (define (base-delay o attempt)
+    (round (min (opt o :max-delay)
+                (* (opt o :initial-delay)
+                   (math/pow (opt o :multiplier) (- attempt 1))))))
+
+  ;; Base delay randomized by ±jitter fraction (uniform).
+  (define (jittered-delay o attempt)
+    (let ((d (base-delay o attempt))
+          (j (opt o :jitter)))
+      (if (<= j 0)
+          d
+          (round (* d (+ 1 (* j (- (* 2 (math/random)) 1))))))))
+
+  (define (error-message e)
+    (get e :message "unknown error"))
+
+  (define (retry-loop thunk o attempt)
+    (try (thunk)
+      (catch e
+        (let ((max-attempts (opt o :max-attempts))
+              (retry-if     (get o :retry-if (fn (err) #t)))
+              (on-retry     (get o :on-retry nil))
+              (sleep-fn     (get o :sleep-fn sleep)))
+          (cond
+            ((not (retry-if e))
+             (error (error-message e)))
+            ((>= attempt max-attempts)
+             (error (format "retry: giving up after ~a attempts — ~a"
+                            max-attempts (error-message e))))
+            (else
+             (let ((delay (jittered-delay o attempt)))
+               (when on-retry (on-retry attempt e delay))
+               (sleep-fn delay)
+               (retry-loop thunk o (+ attempt 1)))))))))
+
+  ;; ---------------------------------------------------------------------
+  ;; Retry with exponential backoff
+  ;; ---------------------------------------------------------------------
+
+  (define (retry/with-retry thunk . opts)
+    "Run thunk, retrying failures with exponential backoff; return its value.
+Options: :max-attempts (3), :initial-delay ms (200), :max-delay ms (10000),
+:multiplier (2.0), :jitter fraction (0.2), :retry-if (fn (err) bool),
+:on-retry (fn (attempt err delay)), :sleep-fn (for testing).
+After :max-attempts failures re-raises as \"retry: giving up after N attempts — <msg>\"."
+    (retry-loop thunk (if (null? opts) {} (first opts)) 1))
+
+  (define (retry/backoff-delays opts)
+    "Return the list of pre-jitter delays (ms) the retry policy would sleep between attempts.
+Pure: length is (- :max-attempts 1); jitter is ignored (it is randomized at runtime)."
+    (map (fn (attempt) (base-delay opts attempt))
+         (range 1 (opt opts :max-attempts))))
+
+  ;; ---------------------------------------------------------------------
+  ;; Circuit breaker
+  ;; ---------------------------------------------------------------------
+
+  ;; A breaker is a closure over mutable state, dispatching on a message
+  ;; keyword: :state, :acquire!, :success!, :failure!.
+
+  (define (retry/circuit-breaker . opts)
+    "Create a circuit breaker (closed → open → half-open state machine).
+Options: :failure-threshold (5) consecutive failures to trip, :reset-timeout ms
+(30000) before an open breaker admits a probe, :half-open-max (1) concurrent
+probes, :clock-fn (for testing; defaults to time-ms). Use with retry/with-breaker."
+    (let* ((o             (if (null? opts) {} (first opts)))
+           (threshold     (get o :failure-threshold 5))
+           (reset-timeout (get o :reset-timeout 30000))
+           (half-open-max (get o :half-open-max 1))
+           (clock-fn      (get o :clock-fn time-ms))
+           (state         :closed)
+           (failures      0)
+           (opened-at     0)
+           (probes        0))
+      (define (open-elapsed?)
+        (>= (- (clock-fn) opened-at) reset-timeout))
+      (fn (msg)
+        (cond
+          ((= msg :state)
+           (if (and (= state :open) (open-elapsed?)) :half-open state))
+          ((= msg :acquire!)
+           (cond
+             ((= state :closed) #t)
+             ((= state :open)
+              (if (open-elapsed?)
+                  (begin (set! state :half-open) (set! probes 1) #t)
+                  #f))
+             (else ;; :half-open
+              (if (< probes half-open-max)
+                  (begin (set! probes (+ probes 1)) #t)
+                  #f))))
+          ((= msg :success!)
+           (set! state :closed)
+           (set! failures 0)
+           (set! probes 0)
+           nil)
+          ((= msg :failure!)
+           (if (= state :half-open)
+               (begin (set! state :open)
+                      (set! opened-at (clock-fn))
+                      (set! probes 0))
+               (begin (set! failures (+ failures 1))
+                      (when (>= failures threshold)
+                        (set! state :open)
+                        (set! opened-at (clock-fn))
+                        (set! failures 0))))
+           nil)
+          (else
+           (error (format "retry/circuit-breaker: unknown message ~a" msg)))))))
+
+  (define (retry/with-breaker breaker thunk)
+    "Run thunk through the breaker; return its value.
+Closed: failures count toward the threshold. Open: raises \"retry: circuit open\"
+immediately until :reset-timeout elapses. Half-open: admits :half-open-max probes;
+a probe success closes the breaker, a probe failure re-opens it."
+    (if (not (breaker :acquire!))
+        (error "retry: circuit open")
+        (try (let ((v (thunk)))
+               (breaker :success!)
+               v)
+          (catch e
+            (breaker :failure!)
+            (error (error-message e))))))
+
+  (define (retry/breaker-state breaker)
+    "Return the breaker's current state: :closed, :open, or :half-open."
+    (breaker :state))
+
+  ;; ---------------------------------------------------------------------
+  ;; Rate limiter (token bucket)
+  ;; ---------------------------------------------------------------------
+
+  (define (retry/rate-limiter opts)
+    "Create a token-bucket rate limiter allowing :rate calls per :per milliseconds.
+Options: :rate (10), :per ms (1000), :clock-fn and :sleep-fn (for testing).
+The bucket starts full (burst up to :rate) and refills continuously.
+Use with retry/with-limit or retry/try-acquire!."
+    (let* ((rate        (get opts :rate 10))
+           (per         (get opts :per 1000))
+           (clock-fn    (get opts :clock-fn time-ms))
+           (sleep-fn    (get opts :sleep-fn sleep))
+           (tokens      rate)
+           (last-refill (clock-fn)))
+      (define (refill!)
+        (let ((now (clock-fn)))
+          (set! tokens (min rate (+ tokens (/ (* (- now last-refill) rate) per))))
+          (set! last-refill now)))
+      (fn (msg)
+        (cond
+          ((= msg :try-acquire!)
+           (refill!)
+           (if (>= tokens 1)
+               (begin (set! tokens (- tokens 1)) #t)
+               #f))
+          ((= msg :wait-ms)
+           (refill!)
+           (if (>= tokens 1)
+               0
+               (ceil (/ (* (- 1 tokens) per) rate))))
+          ((= msg :sleep-fn) sleep-fn)
+          (else
+           (error (format "retry/rate-limiter: unknown message ~a" msg)))))))
+
+  (define (limit-acquire! limiter)
+    (if (limiter :try-acquire!)
+        nil
+        (begin
+          ((limiter :sleep-fn) (limiter :wait-ms))
+          (limit-acquire! limiter))))
+
+  (define (retry/with-limit limiter thunk)
+    "Sleep until the limiter grants a token, then run thunk and return its value."
+    (limit-acquire! limiter)
+    (thunk))
+
+  (define (retry/try-acquire! limiter)
+    "Take a token if one is available, without sleeping. Returns #t or #f."
+    (limiter :try-acquire!))
+
+  ;; ---------------------------------------------------------------------
+  ;; Timeout
+  ;; ---------------------------------------------------------------------
+
+  (define (retry/with-timeout ms thunk)
+    "Run thunk as an async task; raise an error if it isn't done within ms.
+On expiry the task is cancelled and in-flight offloaded I/O (http, shell, llm)
+is aborted. Sema's scheduler is cooperative: the thunk must yield (offloaded
+I/O, await, channel ops, async/sleep) to be preemptable — pure CPU loops or a
+blocking (sleep ...) cannot be interrupted."
+    (async/timeout ms (async/spawn thunk))))

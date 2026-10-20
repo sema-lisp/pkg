@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "sema-retry",
+    "version": "0.1.0",
+    "description": "Retry with exponential backoff, circuit breaker, and rate limiting",
+    "repository": "https://github.com/sema-lisp/packages",
+    "entrypoint": "package.sema"
+  },
+  "provenance": {
+    "tarballSha256": "ea1f177349994e1cfc0684dfc796063ac389a583448f6b1a574c9b4595dcf82e",
+    "tarballSizeBytes": 8115,
+    "registryDownloadUrl": "https://pkg.sema-lang.com/api/v1/packages/sema-retry/0.1.0/download",
+    "registryPublishedAt": "2026-07-07 21:28:14",
+    "sourceSha256": "031c56d38f481a90d742e50053d53300c45fc4f89226f61f6ae0b52dc2b0e2bf",
+    "manifestSha256": "ac701e60f7502dcfba74caa86a149bea2b68fee894d1541d8eadd1bdb834af95",
+    "readmeSha256": "3349914db4256c8227c1542209ec6037eec5e62775e00fe0de4bdee74470a216",
+    "extraction": "prototype fixture parser; production proposal requires sema-reader AST parsing"
+  },
+  "api": [
+    {
+      "name": "retry/with-retry",
+      "kind": "function",
+      "signature": "(retry/with-retry thunk . opts)",
+      "docstring": "Run thunk, retrying failures with exponential backoff; return its value.\nOptions: :max-attempts (3), :initial-delay ms (200), :max-delay ms (10000),\n:multiplier (2.0), :jitter fraction (0.2), :retry-if (fn (err) bool),\n:on-retry (fn (attempt err delay)), :sleep-fn (for testing).\nAfter :max-attempts failures re-raises as \"retry: giving up after N attempts — <msg>\".",
+      "source": {
+        "path": "package.sema",
+        "line": 73
+      }
+    },
+    {
+      "name": "retry/backoff-delays",
+      "kind": "function",
+      "signature": "(retry/backoff-delays opts)",
+      "docstring": "Return the list of pre-jitter delays (ms) the retry policy would sleep between attempts.\nPure: length is (- :max-attempts 1); jitter is ignored (it is randomized at runtime).",
+      "source": {
+        "path": "package.sema",
+        "line": 81
+      }
+    },
+    {
+      "name": "retry/circuit-breaker",
+      "kind": "function",
+      "signature": "(retry/circuit-breaker . opts)",
+      "docstring": "Create a circuit breaker (closed → open → half-open state machine).\nOptions: :failure-threshold (5) consecutive failures to trip, :reset-timeout ms\n(30000) before an open breaker admits a probe, :half-open-max (1) concurrent\nprobes, :clock-fn (for testing; defaults to time-ms). Use with retry/with-breaker.",
+      "source": {
+        "path": "package.sema",
+        "line": 94
+      }
+    },
+    {
+      "name": "retry/with-breaker",
+      "kind": "function",
+      "signature": "(retry/with-breaker breaker thunk)",
+      "docstring": "Run thunk through the breaker; return its value.\nClosed: failures count toward the threshold. Open: raises \"retry: circuit open\"\nimmediately until :reset-timeout elapses. Half-open: admits :half-open-max probes;\na probe success closes the breaker, a probe failure re-opens it.",
+      "source": {
+        "path": "package.sema",
+        "line": 144
+      }
+    },
+    {
+      "name": "retry/breaker-state",
+      "kind": "function",
+      "signature": "(retry/breaker-state breaker)",
+      "docstring": "Return the breaker's current state: :closed, :open, or :half-open.",
+      "source": {
+        "path": "package.sema",
+        "line": 158
+      }
+    },
+    {
+      "name": "retry/rate-limiter",
+      "kind": "function",
+      "signature": "(retry/rate-limiter opts)",
+      "docstring": "Create a token-bucket rate limiter allowing :rate calls per :per milliseconds.\nOptions: :rate (10), :per ms (1000), :clock-fn and :sleep-fn (for testing).\nThe bucket starts full (burst up to :rate) and refills continuously.\nUse with retry/with-limit or retry/try-acquire!.",
+      "source": {
+        "path": "package.sema",
+        "line": 166
+      }
+    },
+    {
+      "name": "retry/with-limit",
+      "kind": "function",
+      "signature": "(retry/with-limit limiter thunk)",
+      "docstring": "Sleep until the limiter grants a token, then run thunk and return its value.",
+      "source": {
+        "path": "package.sema",
+        "line": 204
+      }
+    },
+    {
+      "name": "retry/try-acquire!",
+      "kind": "function",
+      "signature": "(retry/try-acquire! limiter)",
+      "docstring": "Take a token if one is available, without sleeping. Returns #t or #f.",
+      "source": {
+        "path": "package.sema",
+        "line": 209
+      }
+    },
+    {
+      "name": "retry/with-timeout",
+      "kind": "function",
+      "signature": "(retry/with-timeout ms thunk)",
+      "docstring": "Run thunk as an async task; raise an error if it isn't done within ms.\nOn expiry the task is cancelled and in-flight offloaded I/O (http, shell, llm)\nis aborted. Sema's scheduler is cooperative: the thunk must yield (offloaded\nI/O, await, channel ops, async/sleep) to be preemptable — pure CPU loops or a\nblocking (sleep ...) cannot be interrupted.",
+      "source": {
+        "path": "package.sema",
+        "line": 217
+      }
+    }
+  ],
+  "readme": {
+    "section": "Quick start",
+    "path": "README.md",
+    "markdown": "```sema\n(import \"sema-retry\")\n\n;; Retry a flaky HTTP call: 5 attempts, exponential backoff with jitter.\n(retry/with-retry\n  (fn () (http/get \"https://api.example.com/data\"))\n  {:max-attempts 5 :initial-delay 200 :multiplier 2.0})\n\n;; See exactly what the policy would sleep between attempts:\n(retry/backoff-delays {:max-attempts 5 :initial-delay 200 :multiplier 2.0})\n; => (200 400 800 1600)\n```",
+    "startLine": 18,
+    "endLine": 31
+  }
+}

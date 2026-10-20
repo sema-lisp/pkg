@@ -1,0 +1,130 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>sema-retry 0.1.0 API reference</title><style>:root { color-scheme: dark; --bg:#0c0c0c; --raised:#111; --code:#0a0a0a; --border:#353126; --gold:#d5b86a; --text:#ddd4c4; --muted:#b6ac99; --dim:#918878; --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; --serif: Georgia, "Times New Roman", serif; }
+* { box-sizing: border-box; }
+html { background:var(--bg); }
+body { margin:0; background:var(--bg); color:var(--text); font:15px/1.65 var(--mono); }
+a { color:var(--gold); text-decoration-thickness:1px; text-underline-offset:3px; }
+a:hover { color:#ecd18a; }
+a:focus-visible, summary:focus-visible { outline:2px solid var(--gold); outline-offset:3px; }
+.skip-link { position:absolute; inset-inline-start:1rem; inset-block-start:-4rem; background:var(--gold); color:#17130c; padding:.5rem .75rem; z-index:2; }
+.skip-link:focus { inset-block-start:1rem; }
+.site-header { min-height:56px; padding:0 clamp(1rem, 5vw, 4rem); display:flex; justify-content:space-between; align-items:center; border-block-end:1px solid var(--border); }
+.logo { color:#eee5d5; font:300 1.65rem/1 var(--serif); text-decoration:none; letter-spacing:.045em; }
+.logo span { margin-inline-start:.35rem; color:var(--dim); font:700 .7rem/1 var(--mono); letter-spacing:.08em; }
+nav { display:flex; flex-wrap:wrap; gap:1rem; font-size:.75rem; }
+main { inline-size:min(1180px, 100%); margin-inline:auto; padding:1.65rem clamp(1rem, 5vw, 4rem) 5rem; }
+.crumbs { display:flex; flex-wrap:wrap; gap:.55rem; align-items:center; color:var(--muted); font-size:.74rem; }
+.crumbs span { color:var(--dim); }
+.intro { max-inline-size:72ch; margin-block:1rem 1.5rem; }
+h1,h2 { color:#ebe1d0; font-family:var(--serif); font-weight:400; letter-spacing:-.018em; }
+h1 { font-size:clamp(2rem, 3.3vw, 2.75rem); line-height:1.07; margin:.2rem 0 .55rem; text-wrap:balance; }
+h1 span { color:var(--muted); font:500 .48em/1 var(--mono); letter-spacing:0; }
+h2 { font-size:1.55rem; margin:0; }
+.intro > p { max-inline-size:65ch; color:var(--muted); margin:.3rem 0; }
+.release-meta { color:var(--dim) !important; font-size:.67rem; }
+.layout { display:grid; grid-template-columns:minmax(10rem, 13rem) minmax(0, 1fr); gap:clamp(1.5rem, 4vw, 4rem); align-items:start; }
+.toc { position:sticky; inset-block-start:1.25rem; border-block-start:1px solid var(--border); padding-block-start:.8rem; }
+.toc h2 { font:700 .66rem/1.3 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+.toc ol { margin:1rem 0 0; padding:0; list-style:none; }
+.toc li { margin:.42rem 0; font-size:.72rem; overflow-wrap:anywhere; }
+.content { min-inline-size:0; }
+.section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:1rem; margin-block-end:1.25rem; border-block-end:1px solid var(--border); padding-block-end:.75rem; }
+.section-heading p { color:var(--muted); font-size:.68rem; margin:0; white-space:nowrap; }
+.api-entry { border-block-end:1px solid var(--border); padding-block:1.05rem 1.15rem; scroll-margin-block-start:1rem; }
+.api-entry-title { display:flex; justify-content:space-between; gap:1rem; align-items:baseline; }
+.api-entry h2 { font-family:var(--mono); font-size:1rem; letter-spacing:0; }
+.source-link { color:var(--muted); font-size:.66rem; text-align:right; }
+pre { margin:1rem 0 .9rem; padding:.9rem 1rem; overflow:auto; border:1px solid var(--border); background:var(--code); color:#e4d9c4; font: .78rem/1.55 var(--mono); tab-size:2; }
+.docstring { margin:0; white-space:pre-line; max-inline-size:70ch; color:var(--text); }
+.missing-doc,.warning { color:var(--muted); font-size:.8rem; font-style:italic; }
+.provenance { margin-block-start:1.5rem; color:var(--muted); font-size:.72rem; }
+.provenance summary { color:var(--muted); cursor:pointer; }
+.provenance p { max-inline-size:65ch; }
+dl { margin:1rem 0 0; }
+dl > div { padding-block:.5rem; border-block-start:1px solid var(--border); }
+dt { color:var(--dim); font-size:.63rem; text-transform:uppercase; letter-spacing:.07em; }
+dd { margin:.16rem 0 0; overflow-wrap:anywhere; font-size:.7rem; }
+.readme-excerpt { margin-block-start:1.5rem; padding:1rem; background:var(--raised); border:1px solid var(--border); border-radius:12px; }
+.readme-excerpt summary { color:#e7dcc8; cursor:pointer; font-size:.8rem; }
+.readme-excerpt summary span { color:var(--muted); font-size:.67rem; }
+.readme-excerpt p { color:var(--muted); font-size:.72rem; }
+.print-page { background:#fff; color:#16120d; font:11pt/1.55 Georgia, serif; }
+.print-page main { inline-size:min(760px, 100%); padding:2rem; }
+.print-page .print-header { border-block-end:2px solid #16120d; margin-block-end:1.75rem; }
+.print-header > p:first-child { font:700 9pt var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+.print-page h1,.print-page h2 { color:#16120d; }
+.print-page h1 { font-size:32pt; margin:.25rem 0 .5rem; }
+.print-page h1 span { color:#645d53; font:400 14pt var(--mono); }
+.print-page .api-entry { break-inside:avoid; border-color:#bbb2a4; }
+.print-page .api-entry-title h2 { font:700 12pt var(--mono); }
+.print-page .source-link { color:#4e463c; }
+.print-page pre { border-color:#bbb2a4; background:#f7f4ee; color:#1f1a14; font-size:9pt; white-space:pre-wrap; }
+.print-page .docstring { color:#302a23; }
+.print-page footer { margin-block-start:2rem; border-block-start:1px solid #bbb2a4; color:#4e463c; font-size:9pt; }
+::selection { background:var(--gold); color:#111; }
+@media (max-width: 900px) { .layout { grid-template-columns:minmax(0, 1fr); } .toc { position:static; } .toc ol { display:flex; gap:.5rem 1rem; flex-wrap:wrap; } }
+@media (max-width: 560px) { .site-header { padding-block:.8rem; gap:1rem; align-items:flex-start; flex-direction:column; } .api-entry-title,.section-heading { align-items:flex-start; flex-direction:column; gap:.4rem; } .source-link { text-align:left; } }
+@media print { @page { margin:15mm; } .print-page main { padding:0; max-width:none; } .print-page pre { overflow:visible; } a { color:inherit; text-decoration:none; } }
+</style></head><body class="print-page"><main><header class="print-header"><p>sema pkg · offline reference</p><h1>sema-retry <span>0.1.0</span></h1><p>Retry with exponential backoff, circuit breaker, and rate limiting</p><dl><div><dt>Release tarball SHA-256</dt><dd>ea1f177349994e1cfc0684dfc796063ac389a583448f6b1a574c9b4595dcf82e</dd></div><div><dt>Entrypoint SHA-256</dt><dd>031c56d38f481a90d742e50053d53300c45fc4f89226f61f6ae0b52dc2b0e2bf</dd></div></dl></header><section id="api"><h2>Exported API</h2>
+    <article class="api-entry" id="retry-with-retry">
+      <div class="api-entry-title"><h2><code>retry/with-retry</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L73">package.sema:73</a></div>
+      <pre tabindex="0"><code>(retry/with-retry thunk . opts)</code></pre>
+      <p class="docstring">Run thunk, retrying failures with exponential backoff; return its value.
+Options: :max-attempts (3), :initial-delay ms (200), :max-delay ms (10000),
+:multiplier (2.0), :jitter fraction (0.2), :retry-if (fn (err) bool),
+:on-retry (fn (attempt err delay)), :sleep-fn (for testing).
+After :max-attempts failures re-raises as &quot;retry: giving up after N attempts — &lt;msg&gt;&quot;.</p>
+    </article>
+    <article class="api-entry" id="retry-backoff-delays">
+      <div class="api-entry-title"><h2><code>retry/backoff-delays</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L81">package.sema:81</a></div>
+      <pre tabindex="0"><code>(retry/backoff-delays opts)</code></pre>
+      <p class="docstring">Return the list of pre-jitter delays (ms) the retry policy would sleep between attempts.
+Pure: length is (- :max-attempts 1); jitter is ignored (it is randomized at runtime).</p>
+    </article>
+    <article class="api-entry" id="retry-circuit-breaker">
+      <div class="api-entry-title"><h2><code>retry/circuit-breaker</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L94">package.sema:94</a></div>
+      <pre tabindex="0"><code>(retry/circuit-breaker . opts)</code></pre>
+      <p class="docstring">Create a circuit breaker (closed → open → half-open state machine).
+Options: :failure-threshold (5) consecutive failures to trip, :reset-timeout ms
+(30000) before an open breaker admits a probe, :half-open-max (1) concurrent
+probes, :clock-fn (for testing; defaults to time-ms). Use with retry/with-breaker.</p>
+    </article>
+    <article class="api-entry" id="retry-with-breaker">
+      <div class="api-entry-title"><h2><code>retry/with-breaker</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L144">package.sema:144</a></div>
+      <pre tabindex="0"><code>(retry/with-breaker breaker thunk)</code></pre>
+      <p class="docstring">Run thunk through the breaker; return its value.
+Closed: failures count toward the threshold. Open: raises &quot;retry: circuit open&quot;
+immediately until :reset-timeout elapses. Half-open: admits :half-open-max probes;
+a probe success closes the breaker, a probe failure re-opens it.</p>
+    </article>
+    <article class="api-entry" id="retry-breaker-state">
+      <div class="api-entry-title"><h2><code>retry/breaker-state</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L158">package.sema:158</a></div>
+      <pre tabindex="0"><code>(retry/breaker-state breaker)</code></pre>
+      <p class="docstring">Return the breaker&#39;s current state: :closed, :open, or :half-open.</p>
+    </article>
+    <article class="api-entry" id="retry-rate-limiter">
+      <div class="api-entry-title"><h2><code>retry/rate-limiter</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L166">package.sema:166</a></div>
+      <pre tabindex="0"><code>(retry/rate-limiter opts)</code></pre>
+      <p class="docstring">Create a token-bucket rate limiter allowing :rate calls per :per milliseconds.
+Options: :rate (10), :per ms (1000), :clock-fn and :sleep-fn (for testing).
+The bucket starts full (burst up to :rate) and refills continuously.
+Use with retry/with-limit or retry/try-acquire!.</p>
+    </article>
+    <article class="api-entry" id="retry-with-limit">
+      <div class="api-entry-title"><h2><code>retry/with-limit</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L204">package.sema:204</a></div>
+      <pre tabindex="0"><code>(retry/with-limit limiter thunk)</code></pre>
+      <p class="docstring">Sleep until the limiter grants a token, then run thunk and return its value.</p>
+    </article>
+    <article class="api-entry" id="retry-try-acquire-bang">
+      <div class="api-entry-title"><h2><code>retry/try-acquire!</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L209">package.sema:209</a></div>
+      <pre tabindex="0"><code>(retry/try-acquire! limiter)</code></pre>
+      <p class="docstring">Take a token if one is available, without sleeping. Returns #t or #f.</p>
+    </article>
+    <article class="api-entry" id="retry-with-timeout">
+      <div class="api-entry-title"><h2><code>retry/with-timeout</code></h2><a class="source-link" href="/packages/sema-retry/0.1.0/source/package.sema#L217">package.sema:217</a></div>
+      <pre tabindex="0"><code>(retry/with-timeout ms thunk)</code></pre>
+      <p class="docstring">Run thunk as an async task; raise an error if it isn&#39;t done within ms.
+On expiry the task is cancelled and in-flight offloaded I/O (http, shell, llm)
+is aborted. Sema&#39;s scheduler is cooperative: the thunk must yield (offloaded
+I/O, await, channel ops, async/sleep) to be preemptable — pure CPU loops or a
+blocking (sleep ...) cannot be interrupted.</p>
+    </article></section><footer><p>Generated from the same API document model as the web and Markdown views.</p><p>README narrative is intentionally not converted into function documentation.</p></footer></main></body></html>

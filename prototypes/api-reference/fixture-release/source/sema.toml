@@ -1,0 +1,8 @@
+[package]
+name = "sema-retry"
+version = "0.1.0"
+description = "Retry with exponential backoff, circuit breaker, and rate limiting"
+entrypoint = "package.sema"
+license = "MIT"
+repository = "https://github.com/sema-lisp/packages"
+
