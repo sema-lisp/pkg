@@ -62,7 +62,7 @@ dd { margin:.16rem 0 0; overflow-wrap:anywhere; font-size:.7rem; }
 .print-page footer { margin-block-start:2rem; border-block-start:1px solid #bbb2a4; color:#4e463c; font-size:9pt; }
 ::selection { background:var(--gold); color:#111; }
 @media (max-width: 900px) { .layout { grid-template-columns:minmax(0, 1fr); } .toc { position:static; } .toc ol { display:flex; gap:.5rem 1rem; flex-wrap:wrap; } }
-@media (max-width: 560px) { .site-header { padding-block:.8rem; gap:1rem; align-items:flex-start; flex-direction:column; } .api-entry-title,.section-heading { align-items:flex-start; flex-direction:column; gap:.4rem; } .source-link { text-align:left; } }
+@media (max-width: 560px) { .site-header { padding-block:.8rem; gap:1rem; align-items:flex-start; flex-direction:column; } .api-entry-title,.section-heading { align-items:flex-start; flex-direction:column; gap:.4rem; } .source-link { text-align:left; } .toc ol { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.3rem .75rem; } .toc li { min-inline-size:0; margin:0; } .toc a,.release-meta { overflow-wrap:anywhere; } }
 @media print { @page { margin:15mm; } .print-page main { padding:0; max-width:none; } .print-page pre { overflow:visible; } a { color:inherit; text-decoration:none; } }
 </style></head>
   <body><a class="skip-link" href="#api">Skip to API</a><header class="site-header"><a class="logo" href="/packages/sema-retry">sema<span>pkg</span></a><nav aria-label="Package views"><a href="/packages/sema-retry/0.1.0/api">API</a><a href="/packages/sema-retry/0.1.0/api/print">Print / save</a><a href="/packages/sema-retry/0.1.0/api.md">Markdown</a></nav></header>
