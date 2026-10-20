@@ -321,25 +321,19 @@ async fn yank(
 
 async fn remove(db: &db::Db, name: Option<&String>) -> Result<String, String> {
     let name = name.ok_or("usage: sema-pkg package remove <name>")?;
-    let Some(orphaned) = dal::packages::delete_by_name(db, name).await else {
+    let blobs = BlobStore::from_config(&Config::from_env())?;
+    let Some(orphaned) = dal::packages::delete_by_name(db, name, &cli_actor())
+        .await
+        .map_err(|e| e.to_string())?
+    else {
         return Err(format!("No such package: {name}"));
     };
-    let blobs = BlobStore::from_config(&Config::from_env())?;
     let mut reclaimed = 0;
     for key in &orphaned {
         if blobs.delete(key).await.is_ok() {
             reclaimed += 1;
         }
     }
-    crate::audit::log(
-        db,
-        &cli_actor(),
-        "remove_package",
-        Some("package"),
-        Some(name),
-        Some(&format!("{reclaimed} blobs reclaimed")),
-    )
-    .await;
     Ok(format!(
         "Removed package {name} and all its versions ({reclaimed} blob(s) reclaimed)"
     ))

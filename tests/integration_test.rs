@@ -8,6 +8,27 @@ use tower::ServiceExt;
 mod common;
 use common::*;
 
+async fn assert_audit_entry(app: &axum::Router, session: &str, expected: serde_json::Value) {
+    let action = expected["action"].as_str().unwrap();
+    let res = get_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/audit?action={action}"),
+        session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    let entries = body["entries"].as_array().unwrap();
+    assert!(
+        entries.iter().any(|entry| expected
+            .as_object()
+            .unwrap()
+            .iter()
+            .all(|(key, value)| &entry[key] == value)),
+        "Missing audit entry {expected} in {body}"
+    );
+}
+
 // ── Auth Tests ──
 
 #[tokio::test]
@@ -610,8 +631,8 @@ async fn test_download_package() {
 
 #[tokio::test]
 async fn test_yank_package() {
-    let (app, _dir) = test_app().await;
-    let session = register_user(app.clone(), "yankuser", "yank@example.com").await;
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "yankuser", "yank@example.com").await;
     let token = create_api_token(app.clone(), &session, "yank-token").await;
 
     publish_package(app.clone(), &token, "yank-pkg", "1.0.0", b"data").await;
@@ -630,6 +651,10 @@ async fn test_yank_package() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+
+    assert_audit_entry(&app, &session, serde_json::json!({
+        "action": "yank", "actor": "yankuser", "target_type": "version", "target_name": "yank-pkg", "detail": "1.0.0"
+    })).await;
 
     // Download should fail for yanked
     let res = app
@@ -676,8 +701,8 @@ async fn test_search_api() {
 
 #[tokio::test]
 async fn test_add_and_remove_owner() {
-    let (app, _dir) = test_app().await;
-    let session1 = register_user(app.clone(), "origowner", "oo@example.com").await;
+    let (app, state, _dir) = test_app_with_state().await;
+    let session1 = register_admin(app.clone(), &state, "origowner", "oo@example.com").await;
     let token1 = create_api_token(app.clone(), &session1, "oo-token").await;
     register_user(app.clone(), "newowner", "no@example.com").await;
 
@@ -732,6 +757,12 @@ async fn test_add_and_remove_owner() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+
+    for action in ["add_owner", "remove_owner"] {
+        assert_audit_entry(&app, &session1, serde_json::json!({
+            "action": action, "actor": "origowner", "target_type": "package", "target_name": "shared-pkg", "detail": "newowner"
+        })).await;
+    }
 
     // Cannot remove last owner
     let res = app
@@ -2126,6 +2157,9 @@ async fn test_admin_revoke_tokens() {
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
     assert_eq!(body["revoked"], 2);
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "revoke_tokens", "actor": "rt-admin", "target_type": "user", "target_name": "rt-victim", "detail": "revoked 2 tokens"
+    })).await;
 
     // Both tokens should be unusable
     let res = publish_package(app.clone(), &token1, "rt-pkg1", "1.0.0", b"data").await;
@@ -2165,6 +2199,12 @@ async fn test_admin_set_role() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+
+    for detail in ["set role to admin", "set role to user"] {
+        assert_audit_entry(&app, &admin_session, serde_json::json!({
+            "action": "set_role", "actor": "sr-admin", "target_type": "user", "target_name": "sr-user1", "detail": detail
+        })).await;
+    }
 
     // User1 should get 403 on admin endpoints
     let res = get_with_session(app.clone(), "/api/v1/admin/stats", &user_session).await;
@@ -2232,6 +2272,9 @@ async fn test_admin_yank_all() {
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
     assert_eq!(body["yanked"], 3);
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "yank_all", "actor": "ya-admin", "target_type": "package", "target_name": "ya-pkg", "detail": "yanked 3 versions"
+    })).await;
 
     // Downloading any version should return 404
     let res = app
@@ -2276,6 +2319,141 @@ async fn test_admin_remove_package() {
 }
 
 #[tokio::test]
+async fn test_package_removal_preserves_report_audit_context() {
+    for via_cli in [false, true] {
+        let (app, state, _dir) = test_app_with_state().await;
+        let session =
+            register_admin(app.clone(), &state, "removal-admin", "removal@test.com").await;
+        let token = create_api_token(app.clone(), &session, "removal").await;
+        for version in ["1.0.0", "2.0.0"] {
+            let res =
+                publish_package(app.clone(), &token, "reported-pkg", version, b"fixture").await;
+            assert_eq!(res.status(), StatusCode::CREATED);
+        }
+        for reason in ["Misleading package description", "Repeated spam uploads"] {
+            let res = post_json_with_session(app.clone(), "/api/v1/reports", serde_json::json!({
+                "target_type": "package", "target_name": "reported-pkg", "report_type": "spam", "reason": reason
+            }), &session).await;
+            assert_eq!(res.status(), StatusCode::CREATED);
+        }
+        let reports = sema_pkg::entity::report::Entity::find()
+            .all(&state.db)
+            .await
+            .unwrap();
+        let actor = if via_cli {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_sema-pkg"))
+                .args(["package", "remove", "reported-pkg"])
+                .env("DATABASE_URL", &state.config.database_url)
+                .env("BLOB_DIR", &state.config.blob_dir)
+                .env("USER", "audit-test")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            "cli:audit-test"
+        } else {
+            let res =
+                delete_with_session(app.clone(), "/api/v1/admin/packages/reported-pkg", &session)
+                    .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            "removal-admin"
+        };
+        assert!(
+            sema_pkg::dal::packages::find_by_name(&state.db, "reported-pkg")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            sema_pkg::entity::report::Entity::find()
+                .count(&state.db)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_audit_entry(&app, &session, serde_json::json!({
+            "action": "remove_package", "actor": actor, "target_type": "package", "target_name": "reported-pkg", "detail": "Removed 2 versions"
+        })).await;
+        for report in reports {
+            assert_audit_entry(&app, &session, serde_json::json!({
+                "action": "action_report", "actor": actor, "target_type": "report", "target_name": report.id.to_string(),
+                "detail": format!("package reported-pkg · spam · package removed\nReason: {}", report.reason)
+            })).await;
+        }
+        let body = body_json(
+            get_with_session(
+                app.clone(),
+                "/api/v1/admin/audit?q=Repeated%20spam%20uploads",
+                &session,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["entries"][0]["action"], "action_report");
+    }
+}
+
+#[tokio::test]
+async fn test_report_and_removal_roll_back_when_audit_write_fails() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "rollback-admin", "rollback@test.com").await;
+    let token = create_api_token(app.clone(), &session, "rollback").await;
+    publish_package(app.clone(), &token, "keep-pkg", "1.0.0", b"data").await;
+    post_json_with_session(app.clone(), "/api/v1/reports", serde_json::json!({
+        "target_type": "package", "target_name": "keep-pkg", "report_type": "other", "reason": "Keep this context"
+    }), &session).await;
+    let report = sema_pkg::entity::report::Entity::find()
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .db
+        .execute_unprepared("DROP TABLE audit_log")
+        .await
+        .unwrap();
+
+    let res = post_empty_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/reports/{}/dismiss", report.id),
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let saved = sema_pkg::entity::report::Entity::find_by_id(report.id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, "open");
+
+    let res = delete_with_session(app.clone(), "/api/v1/admin/packages/keep-pkg", &session).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(sema_pkg::dal::packages::find_by_name(&state.db, "keep-pkg")
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        package_version::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sema_pkg::entity::report::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn test_admin_transfer_ownership() {
     let (app, state, _dir) = test_app_with_state().await;
     let admin_session = register_admin(app.clone(), &state, "to-admin", "to-admin@test.com").await;
@@ -2297,6 +2475,10 @@ async fn test_admin_transfer_ownership() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
+
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "transfer_ownership", "actor": "to-admin", "target_type": "package", "target_name": "to-pkg", "detail": "transferred to to-newowner"
+    })).await;
 
     // New owner can publish a new version
     let res = publish_package(app.clone(), &new_owner_token, "to-pkg", "2.0.0", b"data2").await;
@@ -2337,6 +2519,26 @@ async fn test_admin_audit_log() {
         .map(|e| e["action"].as_str().unwrap())
         .collect();
     assert!(actions.contains(&"ban_user"));
+    for (action, actor, target_type, target_name, detail) in [
+        ("register", "al-victim", "user", "al-victim", None),
+        ("publish", "al-victim", "package", "al-pkg", Some("1.0.0")),
+        (
+            "ban_user",
+            "al-admin",
+            "user",
+            "al-victim",
+            Some("audit test"),
+        ),
+    ] {
+        let entry = entries
+            .iter()
+            .find(|e| e["action"] == action && e["actor"] == actor)
+            .unwrap();
+        assert_eq!(entry["target_type"], target_type);
+        assert_eq!(entry["target_name"], target_name);
+        assert_eq!(entry["detail"].as_str(), detail);
+        assert!(!entry["created_at"].as_str().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -2378,6 +2580,17 @@ async fn test_admin_audit_filter() {
     for entry in entries {
         assert_eq!(entry["action"], "ban_user");
     }
+    let res = get_with_session(
+        app.clone(),
+        "/api/v1/admin/audit?action=unban_user",
+        &admin_session,
+    )
+    .await;
+    let body = body_json(res).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["entries"][0]["action"], "unban_user");
+    assert_eq!(body["entries"][0]["actor"], "af-admin");
+    assert_eq!(body["entries"][0]["target_name"], "af-victim");
 }
 
 #[tokio::test]
@@ -2453,6 +2666,33 @@ async fn test_admin_reports_lifecycle() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "dismiss_report", "actor": "rl-admin", "target_type": "report", "target_name": report_id.to_string(),
+        "detail": "package suspicious-pkg · spam · dismissed\nReason: This package is spam"
+    })).await;
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "action_report", "actor": "rl-admin", "target_type": "report", "target_name": report_id2.to_string(),
+        "detail": "user bad-actor · abuse · actioned\nReason: Abusive behavior"
+    })).await;
+    // Repeating a resolution must not create another audit entry.
+    let res = post_empty_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/reports/{report_id2}/action"),
+        &admin_session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body = body_json(
+        get_with_session(
+            app.clone(),
+            "/api/v1/admin/audit?action=action_report",
+            &admin_session,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["total"], 1);
 
     // No more open reports
     let res = get_with_session(app.clone(), "/api/v1/admin/reports", &admin_session).await;

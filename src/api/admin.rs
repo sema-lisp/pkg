@@ -155,7 +155,11 @@ pub async fn ban_user(
     // Delete all sessions
     let _ = crate::dal::sessions::delete_all_for_user(&state.db, user_id).await;
 
-    let detail = reason.as_deref().unwrap_or("no reason given");
+    let detail = reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("No reason given");
     audit::log(
         &state.db,
         &admin.username,
@@ -404,7 +408,10 @@ pub async fn remove_package(
     AdminUser(admin): AdminUser,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Some(orphaned) = crate::dal::packages::delete_by_name(&state.db, &name).await else {
+    let Some(orphaned) = crate::dal::packages::delete_by_name(&state.db, &name, &admin.username)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    else {
         return Err(ApiError::not_found("Package not found"));
     };
     // Reclaim blobs no longer referenced by any version.
@@ -413,16 +420,6 @@ pub async fn remove_package(
             tracing::warn!("failed to delete orphaned blob {key}: {e}");
         }
     }
-
-    audit::log(
-        &state.db,
-        &admin.username,
-        "remove_package",
-        Some("package"),
-        Some(&name),
-        None,
-    )
-    .await;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -568,19 +565,16 @@ pub async fn action_report(
     AdminUser(admin): AdminUser,
     Path(report_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let affected = crate::dal::reports::resolve(&state.db, report_id, admin.id, "actioned").await;
-
-    if affected > 0 {
-        audit::log(
-            &state.db,
-            &admin.username,
-            "action_report",
-            Some("report"),
-            Some(&report_id.to_string()),
-            None,
-        )
-        .await;
-
+    let resolved = crate::dal::reports::resolve(
+        &state.db,
+        report_id,
+        admin.id,
+        &admin.username,
+        crate::dal::reports::Resolution::Actioned,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    if resolved {
         Ok(Json(serde_json::json!({"ok": true})))
     } else {
         Err(ApiError::not_found("Report not found or already resolved"))
@@ -592,19 +586,16 @@ pub async fn dismiss_report(
     AdminUser(admin): AdminUser,
     Path(report_id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let affected = crate::dal::reports::resolve(&state.db, report_id, admin.id, "dismissed").await;
-
-    if affected > 0 {
-        audit::log(
-            &state.db,
-            &admin.username,
-            "dismiss_report",
-            Some("report"),
-            Some(&report_id.to_string()),
-            None,
-        )
-        .await;
-
+    let resolved = crate::dal::reports::resolve(
+        &state.db,
+        report_id,
+        admin.id,
+        &admin.username,
+        crate::dal::reports::Resolution::Dismissed,
+    )
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    if resolved {
         Ok(Json(serde_json::json!({"ok": true})))
     } else {
         Err(ApiError::not_found("Report not found or already resolved"))

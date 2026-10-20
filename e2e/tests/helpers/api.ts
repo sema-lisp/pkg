@@ -1,4 +1,5 @@
 import type { APIRequestContext } from '@playwright/test';
+import { gzipSync } from 'node:zlib';
 
 const BASE = 'http://localhost:3111';
 
@@ -60,7 +61,7 @@ export async function publishPackage(
 ): Promise<void> {
   const boundary = '----e2etestboundary';
   const meta = JSON.stringify({ description });
-  const tarball = Buffer.from('fake-tarball-data');
+  const tarball = gzipSync(Buffer.from('fake-tarball-data'));
 
   let body = '';
   body += `--${boundary}\r\n`;

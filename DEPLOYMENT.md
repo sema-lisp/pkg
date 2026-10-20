@@ -330,6 +330,12 @@ sema-pkg stats     # users, packages, banned users, open reports, 30-day downloa
 Every privileged CLI mutation is written to the audit log (attributed to
 `cli:<os-user>`), so admin-console and CLI actions share one trail.
 
+Audit entries have no automatic expiry or pruning. The audit page shows the
+stored actor, action, target, detail, and UTC timestamp. The seven-day Litestream
+retention applies to backup history, not to audit entries in the live database.
+New report resolutions and package removals save report context in the audit
+log before the report records are deleted. Existing entries are not backfilled.
+
 ---
 
 ## Health checks

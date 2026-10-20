@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import * as path from 'path';
 import * as api from './helpers/api';
 
@@ -102,12 +102,14 @@ test.describe('Admin Panel', () => {
     // Stat values should be visible and numeric
     const totalUsers = page.getByTestId('stat-users');
     await expect(totalUsers).toBeVisible({ timeout: 10000 });
-    // Total users should be at least 3 (admin + 2 users)
-    const totalUsersText = await totalUsers.textContent();
-    expect(parseInt(totalUsersText ?? '0', 10)).toBeGreaterThanOrEqual(3);
-    // Packages should be at least 1
-    const totalPkgsText = await page.getByTestId('stat-packages').textContent();
-    expect(parseInt(totalPkgsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
+    // Stats are cached for 30 seconds; verify the displayed response rather
+    // than assuming the cache already includes this test's new records.
+    const statsResponse = await request.get(`${BASE}/api/v1/admin/stats`, {
+      headers: { cookie: `session=${adminSession}` },
+    });
+    const stats = await statsResponse.json();
+    await expect(totalUsers).toHaveText(String(stats.total_users));
+    await expect(page.getByTestId('stat-packages')).toHaveText(String(stats.total_packages));
   });
 
   // ────────────────────────────────────────────
@@ -207,6 +209,9 @@ test.describe('Admin Panel', () => {
     await expect(page.getByTestId('confirm-dialog')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('confirm-title')).toHaveText('Ban User');
 
+    const reason = 'Repeated spam uploads after a warning';
+    await page.getByLabel('Reason (optional)').fill(reason);
+
     // Click the confirm button and wait for toast
     await page.getByTestId('confirm-accept').click();
 
@@ -222,6 +227,13 @@ test.describe('Admin Panel', () => {
       .filter({ hasText: bannable })
       .getByTestId('status-banned');
     await expect(statusBadge).toBeVisible({ timeout: 10000 });
+    await page.getByTestId('nav-audit').click();
+    await page.getByTestId('audit-search').fill(bannable);
+    const entry = page.getByRole('list', { name: 'Audit events' }).getByTestId('audit-entry')
+      .filter({ hasText: bannable })
+      .filter({ has: page.getByText('Banned user', { exact: true }) });
+    await expect(entry).toContainText(bannable);
+    await expect(entry).toContainText(reason);
   });
 
   // ────────────────────────────────────────────
@@ -349,6 +361,7 @@ test.describe('Admin Panel', () => {
     await api.register(request, victim, `${victim}@test.com`);
     const victimId = getUserId(victim);
     await request.post(`${BASE}/api/v1/admin/users/${victimId}/ban`, {
+      data: { reason: 'Reason with <em>literal markup</em>' },
       headers: { cookie: `session=${adminSession}` },
     });
 
@@ -356,10 +369,12 @@ test.describe('Admin Panel', () => {
     await page.goto('/admin');
     await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
+    const recent = page.getByRole('list', { name: 'Recent activity' });
+    await expect(recent).toContainText(pkgName);
+    await expect(recent).toContainText('Version: 1.0.0');
+
     // Switch to Audit Log tab
     await page.getByTestId('nav-audit').click();
-    // Wait for tab to switch and data to load
-    await page.waitForTimeout(1000);
 
     // Audit entries should be visible — use the page title as proof tab switched
     await expect(
@@ -371,6 +386,63 @@ test.describe('Admin Panel', () => {
     await expect(entries.first()).toBeVisible({ timeout: 10000 });
     const count = await entries.count();
     expect(count).toBeGreaterThanOrEqual(1);
+
+    const events = page.getByRole('list', { name: 'Audit events' });
+    await expect(events).toContainText(victim);
+    await expect(events).toContainText('Reason with <em>literal markup</em>');
+    await expect(events.locator('em')).toHaveCount(0);
+    await expect(events.locator('time').first()).toHaveAttribute('datetime', /Z$/);
+    await expect(events.locator('time').first()).toContainText('UTC');
+    await page.getByLabel('Event type').selectOption('ban_user');
+    await expect(events).toContainText('Banned user');
+    await expect(events).not.toContainText('Published');
+    await page.getByLabel('Event type').selectOption('publish');
+    await page.getByLabel('Search events').fill(pkgName);
+    await expect(events.getByTestId('audit-entry')).toHaveCount(1);
+    await expect(events).toContainText(pkgName);
+    await expect(events).toContainText('Version: 1.0.0');
+    await page.getByLabel('Search events').fill('nothing-matches-this-event');
+    await expect(events).toContainText('No audit entries found.');
+
+    // Audit filters must not hide the dashboard's recent activity.
+    await page.getByTestId('nav-dashboard').click();
+    await expect(recent).toContainText(victim);
+    await expect(recent).toContainText(pkgName);
+  });
+
+  test('audit filters match stored actions and sparse entries render safely on mobile', async ({ page, request }) => {
+    const username = unique('adm-sparse');
+    const session = await api.register(request, username, `${username}@test.com`);
+    makeAdmin(username);
+    const fixture = unique('audit-fixture');
+    const longName = 'long-package-name-'.repeat(12);
+    execFileSync('sqlite3', [DB_PATH, `
+      INSERT INTO audit_log (actor, action, target_type, target_name, detail, created_at) VALUES
+      ('${fixture}', 'webhook_sync', 'package', '${longName}', 'Repository: owner/repo · Tag: v1.2.3 · Version: 1.2.3', '2026-10-20 12:00:00'),
+      ('${fixture}', 'unban_user', 'user', '${username}', NULL, '2026-10-20 12:00:00'),
+      ('${fixture}', 'future_action', NULL, NULL, NULL, '2026-10-20 12:00:00');
+    `]);
+    await api.setSession(page.context(), session);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/admin');
+    await page.getByTestId('nav-audit').click();
+    await page.getByLabel('Search events').fill(fixture);
+    const events = page.getByRole('list', { name: 'Audit events' });
+    await expect(events.getByTestId('audit-entry')).toHaveCount(3);
+    await expect(events).toContainText('future action');
+    await expect(events).not.toContainText('undefined');
+    await expect(events).not.toContainText('null');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+    await page.getByLabel('Event type').selectOption('webhook_sync');
+    await expect(events.getByTestId('audit-entry')).toHaveCount(1);
+    await expect(events).toContainText(longName);
+    await expect(events).toContainText('Repository: owner/repo · Tag: v1.2.3 · Version: 1.2.3');
+    await page.getByLabel('Event type').selectOption('unban_user');
+    await expect(events.getByTestId('audit-entry')).toHaveCount(1);
+    await expect(events).toContainText(username);
+    await expect(events).toContainText('Unbanned user');
+    await expect(page.getByLabel('Event type').locator('option[value="admin"], option[value="ban"], option[value="webhook"]')).toHaveCount(0);
   });
 
   // ────────────────────────────────────────────
@@ -394,6 +466,8 @@ test.describe('Admin Panel', () => {
     );
 
     const targetPkg = unique('reportedpkg');
+    const token = await api.createToken(request, reporterSession);
+    await api.publishPackage(request, token, targetPkg, '1.0.0');
     const reportRes = await request.post(`${BASE}/api/v1/reports`, {
       data: {
         target_type: 'package',
@@ -420,6 +494,17 @@ test.describe('Admin Panel', () => {
     const sectionText = await reportsSection.textContent();
     expect(sectionText).toContain('This package is spam');
     expect(sectionText).toContain(reporter);
+
+    await reportsSection.getByTestId('report-card').filter({ hasText: targetPkg }).getByTestId('action-act').click();
+    await page.getByTestId('confirm-accept').click();
+    await expect(page.getByTestId('toast-success')).toContainText(`Removed ${targetPkg}`);
+    await expect(reportsSection.getByTestId('report-card').filter({ hasText: targetPkg })).toHaveCount(0);
+    await page.getByTestId('nav-audit').click();
+    await page.getByLabel('Search events').fill(targetPkg);
+    const events = page.getByRole('list', { name: 'Audit events' });
+    await expect(events).toContainText('Removed 1 version');
+    await expect(events).toContainText('Actioned report');
+    await expect(events).toContainText('This package is spam');
   });
 
   // ────────────────────────────────────────────

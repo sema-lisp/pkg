@@ -91,7 +91,7 @@ pub async fn list<C: ConnectionTrait>(db: &C, filter: &AuditFilter) -> (Vec<Audi
         r#"SELECT id, actor, action, target_type, target_name, detail, created_at
            FROM audit_log
            WHERE {where_sql}
-           ORDER BY created_at DESC
+           ORDER BY created_at DESC, id DESC
            LIMIT ? OFFSET ?"#
     );
 

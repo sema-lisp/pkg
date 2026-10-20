@@ -5,7 +5,10 @@
 //! `status = 'open'` so a second resolver is a no-op. Timestamps come from
 //! [`time`].
 
-use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, Set,
+    TransactionTrait,
+};
 
 use crate::dal::time;
 use crate::entity::report;
@@ -113,19 +116,32 @@ pub async fn list<C: ConnectionTrait>(
     (reports, total)
 }
 
-/// Resolve an open report, setting its `status` (e.g. `"actioned"` or
-/// `"dismissed"`) and stamping the resolver + time. The `status = 'open'` guard
-/// makes a duplicate resolution a no-op. Returns rows affected (0 if the report
-/// is missing or already resolved).
-pub async fn resolve<C: ConnectionTrait>(
+/// The administrative outcome of a report.
+pub enum Resolution {
+    Actioned,
+    Dismissed,
+}
+
+/// Resolve an open report and snapshot its context in the audit log atomically.
+/// Returns false when the report is missing or already resolved.
+pub async fn resolve<C: ConnectionTrait + TransactionTrait>(
     db: &C,
     report_id: i64,
     resolver_id: i64,
-    status: &str,
-) -> u64 {
-    let result = db
+    actor: &str,
+    resolution: Resolution,
+) -> Result<bool, DbErr> {
+    let (status, action) = match resolution {
+        Resolution::Actioned => ("actioned", "action_report"),
+        Resolution::Dismissed => ("dismissed", "dismiss_report"),
+    };
+    let txn = db.begin().await?;
+    let Some(report) = report::Entity::find_by_id(report_id).one(&txn).await? else {
+        return Ok(false);
+    };
+    let result = txn
         .execute(crate::db::stmt(
-            db.get_database_backend(),
+            txn.get_database_backend(),
             "UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
             [
                 status.into(),
@@ -134,6 +150,19 @@ pub async fn resolve<C: ConnectionTrait>(
                 report_id.into(),
             ],
         ))
-        .await;
-    result.map(|r| r.rows_affected()).unwrap_or(0)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Ok(false);
+    }
+    super::audit_log::record(
+        &txn,
+        actor,
+        action,
+        Some("report"),
+        Some(&report_id.to_string()),
+        Some(&crate::audit::report_detail(&report, status)),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(true)
 }
