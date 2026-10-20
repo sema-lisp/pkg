@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ source_path }} — {{ name }} {{ version }} — Sema Pkg{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/api-docs.css">{% endblock %}
+{% block header_center %}{% include "partials/package_search.html" %}{% endblock %}
+{% block content %}
+<main class="page-content api-reference">
+{% include "partials/package_breadcrumbs.html" %}
+<div class="api-toolbar"><h1 class="api-source-title">{{ source_path }}</h1><a href="/packages/{{ name }}/{{ version }}/api">Back to API reference</a></div>
+<p class="api-reading-note">Source stored with {{ name }} {{ version }}. Line links refer to these exact bytes.</p>
+<pre class="api-source-code" tabindex="0" aria-label="{{ source_path }} source code">{% for line in lines %}<span class="api-source-line" id="L{{ line.number }}"><a href="#L{{ line.number }}" aria-label="Line {{ line.number }}">{{ line.number }}</a><code>{{ line.html|safe }}</code></span>{% endfor %}</pre>
+<p class="api-source-digest">Source SHA-256 <code>{{ source_sha256 }}</code></p>
+</main>
+{% endblock %}

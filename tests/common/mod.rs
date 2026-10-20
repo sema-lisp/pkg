@@ -69,6 +69,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         blob_s3_secret_access_key: std::env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
         max_tarball_bytes: 10 * 1024 * 1024,
         max_dependencies: 64,
+        api_docs_enabled: true,
         // Off by default: the suite hammers endpoints via `oneshot` with no peer
         // address, which the limiter's IP key extractor requires. Only the
         // dedicated rate-limit test opts in (and supplies X-Forwarded-For).

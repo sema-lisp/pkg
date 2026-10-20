@@ -129,13 +129,11 @@
 </style>
 {% endblock %}
 {% block header_center %}
-<form action="/search" method="get" class="search-bar" style="max-width:22rem;">
-  <input type="text" name="q" class="search-input" aria-label="Search packages" placeholder="Search packages…" data-testid="header-search">
-  <button type="submit" class="search-btn">Search</button>
-</form>
+{% include "partials/package_search.html" %}
 {% endblock %}
 {% block content %}
 <div class="page-content">
+  {% include "partials/package_breadcrumbs.html" %}
   <div style="margin-bottom:1.5rem;">
     <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
       <h1 style="font-size:1.3rem; color:var(--gold); font-weight:500;" data-testid="pkg-name">{{ name }}</h1>
@@ -147,6 +145,9 @@
       {% endif %}
     </div>
     <p style="font-size:0.82rem; color:var(--text); margin-top:0.35rem;">{{ description }}</p>
+    {% if api_docs_enabled %}{% if let Some(v) = selected_version %}
+    <a class="package-api-link" data-testid="api-reference-link" href="/packages/{{ name }}/{{ v.version }}/api">API reference</a>
+    {% endif %}{% endif %}
     {% if let Some(notice) = release_notice %}
     <p style="font-size:0.72rem; color:var(--text-dim); margin-top:0.6rem;">{{ notice }}</p>
     {% endif %}

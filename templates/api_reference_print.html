@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ name }} {{ version }} — API reference</title>
+<style>
+body { margin:2rem auto; padding:0 1.5rem; max-width:52rem; color:#171717; background:#fff; font:16px/1.6 system-ui,sans-serif; }
+h1 { font-size:1.6rem; line-height:1.3; margin-bottom:0.3rem; } h2 { font-size:1rem; margin:0 0 0.7rem; overflow-wrap:anywhere; }
+a { color:#171717; text-underline-offset:0.2em; } code,pre { font-family:ui-monospace,monospace; } pre { padding:0.65rem 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:0.85rem; border-block:1px solid #ddd; }
+article { margin-block:1.8rem; break-inside:avoid; } .docstring { white-space:pre-line; } .source,.note,footer { font-size:0.8rem; color:#444; } footer { border-top:1px solid #bbb; padding-top:1rem; margin-top:2rem; } footer code { overflow-wrap:anywhere; }
+@page { margin:18mm; } @media print { body { margin:0; padding:0; max-width:none; font-size:10pt; } h1 { font-size:18pt; } pre { font-size:9pt; } a { text-decoration:none; } }
+</style></head><body>
+<header><h1>{{ name }} {{ version }}</h1><p>API reference · {{ entries.len() }} exports</p><p class="note">Source declarations and literal docstrings from this release. Package code was not executed.</p></header>
+{% if yanked %}<p>This release is yanked.</p>{% endif %}
+{% if !message.is_empty() %}<p>{{ message }}</p>{% endif %}
+{% for entry in entries %}<article id="{{ entry.anchor }}"><h2>{{ entry.name }}</h2>
+{% if let Some(signature) = entry.signature() %}<pre><code>{{ signature }}</code></pre>{% endif %}
+{% if let Some(docstring) = entry.docstring %}<div class="docstring">{{ docstring }}</div>{% endif %}
+{% if let Some(reason) = entry.unresolved_reason %}<p>{{ reason }}</p>{% endif %}
+{% if let Some(line) = entry.line %}<p class="source">Source: <a href="{{ source_url }}#L{{ line }}">{{ source_path }}:{{ line }}</a></p>{% endif %}
+</article>{% endfor %}
+{% if !parser_version.is_empty() %}<footer><p>{{ parser_version }}. Dynamic exports and runtime behavior are not inferred.</p><p>Archive SHA-256: <code>{{ archive_sha256 }}</code></p></footer>{% endif %}
+</body></html>

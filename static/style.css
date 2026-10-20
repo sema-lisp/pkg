@@ -76,6 +76,20 @@ body {
 a { color: var(--gold); text-decoration: none; transition: opacity 0.15s; }
 a:hover { opacity: 0.8; }
 
+.package-breadcrumbs { display:flex; flex-wrap:wrap; gap:0.6rem; align-items:center; font-size:0.72rem; margin-block-end:1.25rem; }
+.package-breadcrumbs a { color:var(--text); }
+.package-breadcrumbs a[aria-current] { color:var(--text-bright); }
+.package-breadcrumbs a:hover { color:var(--gold); }
+.package-api-link { display:inline-block; margin-block-start:0.65rem; font-size:0.8rem; text-decoration:underline; text-underline-offset:0.25em; }
+.package-search { max-width:22rem; min-width:0; }
+.package-search .search-input { min-width:0; }
+.site-header:has(.package-search) { gap:1rem; }
+@media (max-width:800px) {
+  .site-header:has(.package-search) { flex-wrap:wrap; height:auto; min-height:52px; padding:0.75rem 1rem; }
+  .site-header:has(.package-search) .header-nav { margin-inline-start:auto; flex-wrap:wrap; }
+  .package-search { order:1; flex-basis:100%; max-width:none; }
+}
+
 /* ── Header ── */
 .site-header {
   display: flex;

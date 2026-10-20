@@ -17,6 +17,7 @@
 //! pooled connection and a transaction.
 
 pub mod admin;
+pub mod api_docs;
 pub mod audit_log;
 pub mod deps;
 pub mod downloads;

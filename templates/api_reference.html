@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} {{ version }} — API reference — Sema Pkg{% endblock %}
+{% block description %}API declarations for {{ name }} {{ version }}.{% endblock %}
+{% block seo_urls %}<link rel="canonical" href="{{ base_url }}/packages/{{ name }}/{{ version }}/api">{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/api-docs.css">
+<link rel="alternate" type="text/markdown" href="/packages/{{ name }}/{{ version }}/api.md">
+{% endblock %}
+{% block header_center %}{% include "partials/package_search.html" %}{% endblock %}
+{% block content %}
+<main class="page-content api-reference" id="api-reference">
+  {% include "partials/package_breadcrumbs.html" %}
+  <header class="api-package-header">
+    <div><h1><a href="/packages/{{ name }}/{{ version }}">{{ name }}</a> <span class="badge badge-gold">{{ version }}</span></h1><p>{{ description }}</p></div>
+    <a class="api-back-link" href="/packages/{{ name }}/{{ version }}">Package overview</a>
+  </header>
+  <div class="api-toolbar">
+    <h2>API reference <span>{{ entries.len() }} exports</span></h2>
+    <nav aria-label="Documentation formats"><a href="/packages/{{ name }}/{{ version }}/api.md">Markdown</a><a href="/packages/{{ name }}/{{ version }}/api/print">Print / save offline</a></nav>
+  </div>
+  {% if yanked %}<p class="api-notice">This release is yanked. Its documentation is kept for reference.</p>{% endif %}
+  {% if !message.is_empty() %}<div class="api-notice" data-testid="api-docs-notice"><p>{{ message }}</p><a href="/packages/{{ name }}/{{ version }}">Read the release README</a></div>{% endif %}
+  {% if !entries.is_empty() %}
+  <div class="api-layout">
+    <aside class="api-index" aria-label="API index">
+      <div class="api-filter" hidden><label for="api-search">Find an export</label><input id="api-search" type="search" placeholder="Name or description…" autocomplete="off" spellcheck="false" aria-controls="api-entries"><p id="api-results" role="status" aria-live="polite">{{ entries.len() }} exports</p></div>
+      <nav aria-label="Exports"><ul>{% for item in entries %}<li data-api-index="{{ item.entry.anchor }}"><a href="#{{ item.entry.anchor }}"><span>{{ item.entry.name }}</span>{% if item.entry.parameters.is_none() %}<small>unresolved</small>{% endif %}</a></li>{% endfor %}</ul></nav>
+      {% if !source_path.is_empty() %}<a class="api-source-file" href="{{ source_url }}">{{ source_path }}</a>{% endif %}
+    </aside>
+    <div class="api-entries" id="api-entries">
+      <p class="api-reading-note">Exported declarations from this release. Parameter names and descriptions come directly from its source.</p>
+      <p class="api-no-results" hidden>No matching exports. Try a function name or a word from its description.</p>
+      {% for item in entries %}
+      <article class="api-entry" id="{{ item.entry.anchor }}" data-api-entry>
+        <div class="api-entry-heading"><h3><a href="#{{ item.entry.anchor }}">{{ item.entry.name }}</a></h3>{% if let Some(line) = item.entry.line %}<a class="api-source-link" href="{{ source_url }}#L{{ line }}">Source <span>:{{ line }}</span></a>{% endif %}</div>
+        {% if let Some(parameters) = item.entry.parameters %}
+        <div class="api-signature"><pre><code><span class="api-paren">(</span><span class="api-function">{{ item.entry.name }}</span>{% for parameter in parameters %} {% if parameter == "." %}<span class="api-paren">.</span>{% else %}<var>{{ parameter }}</var>{% endif %}{% endfor %}<span class="api-paren">)</span></code></pre><button type="button" class="api-copy" aria-label="Copy signature for {{ item.entry.name }}" hidden>Copy</button></div>
+        {% endif %}
+        {% if let Some(docstring) = item.entry.docstring %}<div class="api-docstring">{{ docstring }}</div>{% else %}{% if item.entry.parameters.is_some() %}<p class="api-undocumented">No docstring in this release. See the source definition below.</p>{% endif %}{% endif %}
+        {% if let Some(reason) = item.entry.unresolved_reason %}<p class="api-undocumented">{{ reason }}</p>{% endif %}
+        {% if !item.definition_html.is_empty() %}<details class="api-definition"><summary>View source definition</summary><pre tabindex="0" aria-label="Source definition for {{ item.entry.name }}"><code>{{ item.definition_html|safe }}</code></pre></details>{% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+  {% if !parser_version.is_empty() %}<details class="api-provenance"><summary>About this reference</summary><p>Generated with {{ parser_version }} without executing package code. These are source declarations; dynamic exports, aliases, and runtime changes are not inferred.</p><p>Archive SHA-256 <code>{{ archive_sha256 }}</code></p></details>{% endif %}
+</main>
+{% endblock %}
+{% block scripts %}<script src="/static/api-docs.js" defer></script>{% endblock %}

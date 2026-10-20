@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::{auth::get_session_user, dal, AppState};
 
+pub mod api_docs;
 pub mod feeds;
 pub mod sitemap;
 
@@ -188,6 +189,9 @@ pub struct SearchTemplate {
 #[derive(Template)]
 #[template(path = "package.html")]
 pub struct PackageTemplate {
+    pub release_version: Option<String>,
+    pub api_section: bool,
+    pub api_docs_enabled: bool,
     pub username: Option<String>,
     pub is_admin: bool,
     pub base_url: String,
@@ -518,6 +522,11 @@ async fn package_page(
     };
 
     render(PackageTemplate {
+        release_version: selected_version
+            .as_ref()
+            .map(|version| version.version.clone()),
+        api_section: false,
+        api_docs_enabled: state.config.api_docs_enabled,
         username: si.username,
         is_admin: si.is_admin,
         base_url: state.config.site_url().to_string(),
