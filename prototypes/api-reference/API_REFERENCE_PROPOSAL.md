@@ -23,10 +23,17 @@ For a literal top-level `(module name ...)` form:
 
 1. Accept only a literal `(export symbol ...)` list in that module.
 2. For each exported symbol, inspect direct module-level forms.
-3. Record a signature only for a direct `(define (symbol args...) "docstring"?
-   ...)` form. The string after the function signature is the source docstring.
+3. Record a signature only for one direct `(define (symbol args...) ...)` form.
+   Treat its first body string as a docstring only when another body form follows.
+   A lone string is a return value, not documentation.
 4. Store the source file, start line, release content digest, parser version, and
    extraction result with the package version.
+
+Reject a candidate signature when an exported name has more than one direct
+definition, or a direct `(set! name ...)` rebinding in the same module. Mark
+that known export `unresolved-export`; do not choose a definition by source
+order. If the export form is not a literal list of symbols, no reliable export
+names may exist: store an unsupported extraction status and no inferred entries.
 
 The source tree and digest are the provenance. Source links must address the
 stored release archive, for example
@@ -34,6 +41,22 @@ stored release archive, for example
 shown, it must name an immutable commit, never a default branch. The package `README.md` remains
 separate: it is rendered as README content and may be linked to an API entry,
 but it does not produce an API signature or description.
+
+## Code evidence (pinned)
+
+These links are pinned to monorepo commit
+[`24558fb0ad4bf9488b6f398eafea01f7aa025462`](https://github.com/sema-lisp/sema/tree/24558fb0ad4bf9488b6f398eafea01f7aa025462):
+
+- [`read_many_with_spans`](https://github.com/sema-lisp/sema/blob/24558fb0ad4bf9488b6f398eafea01f7aa025462/crates/sema-reader/src/reader.rs#L1005-L1014)
+  returns parsed values and a span map.
+- The LSP's [AST docstring extractor](https://github.com/sema-lisp/sema/blob/24558fb0ad4bf9488b6f398eafea01f7aa025462/crates/sema-lsp/src/definitions.rs#L502-L548)
+  recognizes direct `define` shorthand and treats a leading string as a
+  docstring only when later body forms exist.
+- The evaluator's [module export registration](https://github.com/sema-lisp/sema/blob/24558fb0ad4bf9488b6f398eafea01f7aa025462/crates/sema-eval/src/eval.rs#L4040-L4063)
+  receives a list and requires every declared export name to be a symbol; the
+  [collector](https://github.com/sema-lisp/sema/blob/24558fb0ad4bf9488b6f398eafea01f7aa025462/crates/sema-eval/src/special_forms.rs#L651-L675)
+  reads the module environment at runtime. This supports a static declaration
+  view, not a claim about the final runtime API.
 
 ## What the current language data can and cannot prove
 
@@ -50,13 +73,15 @@ metadata contract:
 - definitions nested in conditionals, generated modules, or other forms;
 - function values defined as `(define name (fn ...))` unless the extractor adds
   a specific, parser-backed rule;
+- a duplicate direct definition or direct `set!` rebinding of an exported name;
 - types, return types, optional-argument meaning, examples, deprecation, or
   stability labels that only appear in prose.
 
-For all unsupported cases, publish the exported name with an explicit
-`unresolved-export` status and no invented signature. Extraction errors do not
-block a release; they store a status and diagnostics so the package page can
-show its normal README and version information.
+For unsupported cases with literal export names, publish the name with an
+explicit `unresolved-export` status and no invented signature. If names are not
+literal, publish only the unsupported extraction status. Extraction errors do
+not block a release; they store diagnostics so the package page can show its
+normal README and version information.
 
 ## Stored release document
 
@@ -92,8 +117,9 @@ pages. The `.md` route uses the same model and returns `text/markdown`.
 3. Assert HTML, print HTML, and Markdown are generated from identical document
    fields. Check that every entry has a source span or `unresolved-export`.
 4. Compare golden documents with `sema ast --json` output from the same archive
-   as an independent fixture check. The production implementation still uses
-   `sema-reader` directly, including its spans.
+   as an independent fixture check. This proves agreement on source
+   declarations, not the dynamic runtime API. The production implementation
+   still uses `sema-reader` directly, including its spans.
 5. Roll out behind a config flag. Backfill only releases with stored blobs;
    GitHub redirect-only versions need immutable source snapshots first.
 
