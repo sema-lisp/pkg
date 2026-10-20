@@ -130,7 +130,16 @@ pub async fn link(
         repo: &repo,
     };
     for (tag_name, version) in &tags {
-        match github_sync::sync_tag(&state.db, &access, tag_name, version, package_id).await {
+        match github_sync::sync_tag(
+            &state.db,
+            &access,
+            tag_name,
+            version,
+            package_id,
+            state.config.max_dependencies,
+        )
+        .await
+        {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
@@ -138,13 +147,6 @@ pub async fn link(
                 errors.push(format!("{tag_name}: {e}"));
             }
         }
-    }
-
-    // Fetch README
-    let readme_raw = github_sync::fetch_readme(&client, &token, &owner_name, &repo).await;
-    if let Some(ref raw) = readme_raw {
-        let html = github_sync::render_readme(raw);
-        let _ = dal::packages::set_readme(&state.db, package_id, raw, &html).await;
     }
 
     crate::audit::log(
@@ -213,20 +215,22 @@ pub async fn sync(
         repo: &repo,
     };
     for (tag_name, version) in &tags {
-        match github_sync::sync_tag(&state.db, &access, tag_name, version, package_id).await {
+        match github_sync::sync_tag(
+            &state.db,
+            &access,
+            tag_name,
+            version,
+            package_id,
+            state.config.max_dependencies,
+        )
+        .await
+        {
             Ok(true) => imported += 1,
             Ok(false) => {}
             Err(e) => {
                 let _ = dal::sync_log::record_error(&state.db, package_id, tag_name, &e).await;
             }
         }
-    }
-
-    // Fetch README
-    let readme_raw = github_sync::fetch_readme(&client, &token, &owner_name, &repo).await;
-    if let Some(ref raw) = readme_raw {
-        let html = github_sync::render_readme(raw);
-        let _ = dal::packages::set_readme(&state.db, package_id, raw, &html).await;
     }
 
     Ok(Json(serde_json::json!({
@@ -355,7 +359,16 @@ pub async fn webhook(
         repo: &repo,
     };
 
-    match github_sync::sync_tag(&state.db, &access, tag_name, &version, package_id).await {
+    match github_sync::sync_tag(
+        &state.db,
+        &access,
+        tag_name,
+        &version,
+        package_id,
+        state.config.max_dependencies,
+    )
+    .await
+    {
         Ok(true) => {
             tracing::info!("Webhook: synced {repo_full_name} tag {tag_name} as {version}");
             crate::audit::log(

@@ -41,7 +41,7 @@ Usage: sema-pkg package <command>
 
   yank   <name> <version>            mark a version yanked
   remove <name>                      delete a package and all its versions
-  backfill-readmes                   (re)extract READMEs from stored tarballs";
+  backfill-readmes                   (re)extract release documentation from stored tarballs";
 
 /// Dispatch a CLI command and exit the process.
 pub async fn run(args: &[String]) -> ! {
@@ -345,45 +345,64 @@ async fn remove(db: &db::Db, name: Option<&String>) -> Result<String, String> {
     ))
 }
 
-/// Re-extract and store each package's README from its newest uploaded tarball.
-/// Idempotent; skips GitHub-linked versions (they get their README from the
-/// repo) and packages whose tarball has no README. Backfills packages that were
-/// published before tarball-README extraction existed.
+/// Re-extract release documentation from each stored upload tarball.
+///
+/// Each archive supplies its own historical README and changelog. GitHub
+/// versions are skipped because this command only trusts stored original bytes.
 async fn backfill_readmes(db: &db::Db) -> Result<String, String> {
-    use sea_orm::EntityTrait;
     let blobs = BlobStore::from_config(&Config::from_env())?;
-    let packages = crate::entity::package::Entity::find()
-        .all(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let total = packages.len();
+    const BATCH_SIZE: i64 = 100;
+    let mut after_id = 0;
+    let mut total = 0u32;
     let (mut set, mut skipped) = (0u32, 0u32);
-    for pkg in &packages {
-        let versions = dal::versions::list_for_package_by_id(db, pkg.id).await;
-        let Some(v) = versions
-            .iter()
-            .find(|v| v.tarball_url.is_none() && !v.blob_key.is_empty())
-        else {
-            skipped += 1;
-            continue;
-        };
-        let Some(data) = blobs.read(&v.blob_key).await else {
-            skipped += 1;
-            continue;
-        };
-        match crate::tarball::extract_readme(&data) {
-            Some(md) => {
-                let html = crate::github_sync::render_readme(&md);
-                dal::packages::set_readme(db, pkg.id, &md, &html)
+    loop {
+        let versions = dal::versions::document_backfill_targets(db, after_id, BATCH_SIZE)
+            .await
+            .map_err(|e| e.to_string())?;
+        if versions.is_empty() {
+            break;
+        }
+        for version in &versions {
+            total += 1;
+            after_id = version.id;
+            if version.tarball_url.is_some() || version.blob_key.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let Some(data) = blobs.read(&version.blob_key).await else {
+                skipped += 1;
+                continue;
+            };
+            let (_, checksum, _) = crate::blob::content_key(&data);
+            if checksum != version.checksum_sha256 {
+                skipped += 1;
+                continue;
+            }
+            let docs = crate::tarball::extract_release_docs(&data);
+            if docs.readme.is_some() || docs.changelog.is_some() {
+                let docs = dal::versions::ReleaseDocuments {
+                    readme_html: docs
+                        .readme
+                        .as_deref()
+                        .map(crate::github_sync::render_readme),
+                    changelog_html: docs
+                        .changelog
+                        .as_deref()
+                        .map(crate::github_sync::render_readme),
+                    readme_raw: docs.readme,
+                    changelog_raw: docs.changelog,
+                };
+                dal::versions::set_documents(db, version.id, docs)
                     .await
                     .map_err(|e| e.to_string())?;
                 set += 1;
+            } else {
+                skipped += 1;
             }
-            None => skipped += 1,
         }
     }
     Ok(format!(
-        "Backfilled READMEs: {set} set, {skipped} skipped (of {total} packages)"
+        "Backfilled release documentation: {set} set, {skipped} skipped (of {total} versions)"
     ))
 }
 

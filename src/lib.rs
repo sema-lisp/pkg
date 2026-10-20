@@ -60,6 +60,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Web pages
         .route("/", get(web::index))
         .route("/search", get(web::search))
+        .route(
+            "/packages/{name}/{version}",
+            get(web::package_version_detail),
+        )
         .route("/packages/{name}", get(web::package_detail))
         .route("/login", get(web::login))
         .route("/account", get(web::account))

@@ -137,6 +137,18 @@ On startup the server infers the backend, applies SQLite-only tuning (WAL) where
 relevant, and runs the schema migrations (`src/migration/`, SeaORM programmatic
 migrations that emit correct DDL per engine). No manual schema step is needed.
 
+After deploying the release-documentation migration, run this once against the
+production database and its original upload blob store to capture verified
+historical release READMEs and changelogs:
+
+```bash
+sema-pkg package backfill-readmes
+```
+
+It processes archive metadata in bounded batches, checks each archive's stored
+SHA-256, and skips GitHub-linked releases because their original archives are
+not stored by the registry.
+
 All database access goes through the Data Access Layer in `src/dal/` (one module
 per aggregate: `packages`, `versions`, `owners`, `deps`, `users`, `sessions`,
 `tokens`, `reports`, `audit_log`, `oauth`, `downloads`, plus `admin` read models

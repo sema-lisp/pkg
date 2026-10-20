@@ -132,6 +132,7 @@ pub struct PackageSummary {
     pub published_at: String,
 }
 
+#[derive(Clone)]
 pub struct VersionInfo {
     pub version: String,
     pub published_at: String,
@@ -197,9 +198,13 @@ pub struct PackageTemplate {
     pub github_repo: Option<String>,
     pub owners: Vec<OwnerInfo>,
     pub versions: Vec<VersionInfo>,
+    pub selected_version: Option<VersionInfo>,
+    pub release_notice: Option<String>,
+    pub installable: bool,
     pub deps: Vec<DepInfo>,
     pub total_downloads: i64,
     pub readme_html: Option<String>,
+    pub changelog_html: Option<String>,
     /// Pre-serialized schema.org JSON-LD for the package (SoftwareSourceCode).
     pub jsonld: Option<String>,
 }
@@ -278,7 +283,7 @@ pub async fn index(
         .await
         .into_iter()
         .map(
-            |(name, description, latest_version, published_at)| PackageSummary {
+            |(_, name, description, latest_version, published_at)| PackageSummary {
                 name,
                 description,
                 latest_version,
@@ -317,7 +322,7 @@ pub async fn search(
         .await
         .into_iter()
         .map(
-            |(name, description, latest_version, published_at)| PackageSummary {
+            |(_, name, description, latest_version, published_at)| PackageSummary {
                 name,
                 description,
                 latest_version,
@@ -346,8 +351,25 @@ pub async fn package_detail(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    let si = get_session_info(&state, &headers).await;
+) -> axum::response::Response {
+    package_page(&state, &headers, name, None).await
+}
+
+pub async fn package_version_detail(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path((name, version)): axum::extract::Path<(String, String)>,
+) -> axum::response::Response {
+    package_page(&state, &headers, name, Some(version)).await
+}
+
+async fn package_page(
+    state: &Arc<AppState>,
+    headers: &axum::http::HeaderMap,
+    name: String,
+    requested_version: Option<String>,
+) -> axum::response::Response {
+    let si = get_session_info(state, headers).await;
 
     let pkg = dal::packages::find_by_name(&state.db, &name)
         .await
@@ -358,8 +380,8 @@ pub async fn package_detail(
         Some(p) => p,
         None => {
             return render_not_found(
-                &state,
-                &headers,
+                state,
+                headers,
                 "Package not found",
                 "No package is registered under the name",
                 Some(name),
@@ -373,25 +395,81 @@ pub async fn package_detail(
     let repository_url = pkg.repository_url.clone();
     let source = pkg.source.clone();
     let github_repo = pkg.github_repo.clone();
-    let readme_html = pkg.readme_html.clone();
+    let mut version_models = dal::versions::list_candidates_for_package(&state.db, pkg_id).await;
+    dal::versions::sort_candidates_for_display(&mut version_models);
 
-    let version_models = dal::versions::list_for_package_by_id(&state.db, pkg_id).await;
+    let selected = match requested_version {
+        Some(version) => match version_models
+            .iter()
+            .find(|release| release.version == version)
+        {
+            Some(release) => Some((release.clone(), None)),
+            None => {
+                return render_not_found(
+                    state,
+                    headers,
+                    "Release not found",
+                    "No release is registered under this version",
+                    Some(format!("{name}@{version}")),
+                )
+                .await
+            }
+        },
+        None => dal::versions::default_release_candidate(&version_models).map(|release| {
+            let notice = match release.kind {
+                dal::versions::DefaultReleaseKind::Stable => None,
+                dal::versions::DefaultReleaseKind::PrereleaseFallback => Some(
+                    "No stable release is available. Showing the highest installable prerelease."
+                        .to_string(),
+                ),
+                dal::versions::DefaultReleaseKind::YankedFallback => Some(
+                    "All published releases are yanked. This page is shown for reference only."
+                        .to_string(),
+                ),
+            };
+            (release.version, notice)
+        }),
+    };
 
-    let versions: Vec<VersionInfo> = version_models
-        .iter()
-        .map(|v| VersionInfo {
-            version: v.version.clone(),
-            published_at: v.published_at.clone(),
-            yanked: v.yanked != 0,
-            size_bytes: v.size_bytes,
-            checksum_sha256: v.checksum_sha256.clone(),
-            sema_version_req: v.sema_version_req.clone(),
-        })
-        .collect();
+    let (selected_model, release_notice) = match selected {
+        Some((release, notice)) => (Some(release), notice),
+        None if version_models.is_empty() => (
+            None,
+            Some("No published release is available yet.".to_string()),
+        ),
+        None => (
+            None,
+            Some("No usable semantic-version release is available.".to_string()),
+        ),
+    };
+    let installable = selected_model
+        .as_ref()
+        .is_some_and(|release| release.yanked == 0);
+    let release_notice = release_notice.or_else(|| {
+        selected_model
+            .as_ref()
+            .filter(|release| release.yanked != 0)
+            .map(|_| "This release is yanked and cannot be installed.".to_string())
+    });
+    let selected_version = selected_model.as_ref().map(candidate_info);
+    let docs = match selected_model.as_ref() {
+        Some(release) => dal::versions::find_by_id(&state.db, release.id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let readme_html = docs
+        .as_ref()
+        .and_then(|release| release.readme_html.clone());
+    let changelog_html = docs
+        .as_ref()
+        .and_then(|release| release.changelog_html.clone());
 
-    // Get deps for latest version
-    let deps = if let Some(latest) = version_models.first() {
-        dal::deps::list_for_version(&state.db, latest.id)
+    let versions: Vec<VersionInfo> = version_models.iter().map(candidate_info).collect();
+
+    let deps = if let Some(release) = selected_model.as_ref() {
+        dal::deps::list_for_version(&state.db, release.id)
             .await
             .iter()
             .map(|d| DepInfo {
@@ -425,7 +503,10 @@ pub async fn package_detail(
             "@type": "SoftwareSourceCode",
             "name": &name,
             "description": &description,
-            "url": format!("{site}/packages/{name}"),
+            "url": match selected_model.as_ref() {
+                Some(release) => format!("{site}/packages/{name}/{}", release.version),
+                None => format!("{site}/packages/{name}"),
+            },
             "programmingLanguage": "Sema",
         });
         if let Some(repo) = &repository_url {
@@ -447,12 +528,27 @@ pub async fn package_detail(
         github_repo,
         owners,
         versions,
+        selected_version,
+        release_notice,
+        installable,
         deps,
         total_downloads,
         readme_html,
+        changelog_html,
         jsonld,
     })
     .into_response()
+}
+
+fn candidate_info(version: &dal::versions::ReleaseCandidate) -> VersionInfo {
+    VersionInfo {
+        version: version.version.clone(),
+        published_at: version.published_at.clone(),
+        yanked: version.yanked != 0,
+        size_bytes: version.size_bytes,
+        checksum_sha256: version.checksum_sha256.clone(),
+        sema_version_req: version.sema_version_req.clone(),
+    }
 }
 
 pub async fn login(
@@ -553,7 +649,7 @@ pub async fn account(
         .await
         .into_iter()
         .map(
-            |(name, description, latest_version, published_at)| PackageSummary {
+            |(_, name, description, latest_version, published_at)| PackageSummary {
                 name,
                 description,
                 latest_version,

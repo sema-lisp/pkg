@@ -6,8 +6,13 @@
 {% block twitter_title %}{{ name }} — Sema Pkg{% endblock %}
 {% block twitter_description %}{{ description }}{% endblock %}
 {% block seo_urls %}
+{% if let Some(v) = selected_version %}
+<link rel="canonical" href="{{ base_url }}/packages/{{ name }}/{{ v.version }}">
+<meta property="og:url" content="{{ base_url }}/packages/{{ name }}/{{ v.version }}">
+{% else %}
 <link rel="canonical" href="{{ base_url }}/packages/{{ name }}">
 <meta property="og:url" content="{{ base_url }}/packages/{{ name }}">
+{% endif %}
 {% endblock %}
 {% block head %}
 {% if let Some(jsonld) = jsonld %}
@@ -134,7 +139,7 @@
   <div style="margin-bottom:1.5rem;">
     <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
       <h1 style="font-size:1.3rem; color:var(--gold); font-weight:500;" data-testid="pkg-name">{{ name }}</h1>
-      {% if let Some(v) = versions.first() %}
+      {% if let Some(v) = selected_version %}
       <span class="badge badge-gold">{{ v.version }}</span>
       {% endif %}
       {% if source == "github" %}
@@ -142,16 +147,26 @@
       {% endif %}
     </div>
     <p style="font-size:0.82rem; color:var(--text); margin-top:0.35rem;">{{ description }}</p>
+    {% if let Some(notice) = release_notice %}
+    <p style="font-size:0.72rem; color:var(--text-dim); margin-top:0.6rem;">{{ notice }}</p>
+    {% endif %}
     <div style="margin-top:0.75rem;">
+      {% if installable %}
+      {% if let Some(v) = selected_version %}
       <div class="install-snippet" style="display:inline-flex;" data-testid="install-cmd">
-        <span class="prompt">$</span> sema pkg install {{ name }}
+        <span class="prompt">$</span> sema pkg add {{ name }}@{{ v.version }}
       </div>
+      {% endif %}
+      {% else %}
+      <div class="empty-state" data-testid="not-installable">No installable release</div>
+      {% endif %}
     </div>
   </div>
 
   <div class="detail-grid">
     <sema-tabs hash-sync value="readme">
       <sema-tab value="readme" data-testid="tab-readme">Readme</sema-tab>
+      <sema-tab value="changelog" data-testid="tab-changelog">Changelog</sema-tab>
       <sema-tab value="versions" data-testid="tab-versions">Versions <span style="font-size:0.6rem; color:var(--text-dim);">{{ versions.len() }}</span></sema-tab>
       <sema-tab value="deps" data-testid="tab-deps">Dependencies <span style="font-size:0.6rem; color:var(--text-dim);">{{ deps.len() }}</span></sema-tab>
 
@@ -163,13 +178,21 @@
         {% endif %}
       </sema-tab-panel>
 
+      <sema-tab-panel value="changelog">
+        {% if let Some(html) = changelog_html %}
+        <div class="readme">{{ html|safe }}</div>
+        {% else %}
+        <div class="empty-state">No changelog available for this release</div>
+        {% endif %}
+      </sema-tab-panel>
+
       <sema-tab-panel value="versions" data-testid="versions-table">
         <table class="dep-table">
           <thead><tr><th>Version</th><th>Size</th><th>Published</th></tr></thead>
           <tbody>
             {% for v in versions %}
             <tr>
-              <td><a href="/packages/{{ name }}">{{ v.version }}{% if v.yanked %} <span class="tag" style="color:var(--error);">yanked</span>{% endif %}</a></td>
+              <td><a href="/packages/{{ name }}/{{ v.version }}">{{ v.version }}{% if v.yanked %} <span class="tag" style="color:var(--error);">yanked</span>{% endif %}</a></td>
               <td style="font-size:0.72rem; color:var(--text-dim);">{{ v.size_bytes / 1024 }} KB</td>
               <td style="font-size:0.72rem; color:var(--text-dim);">{{ v.published_at }}</td>
             </tr>
@@ -252,7 +275,7 @@
       </section>
       {% endif %}
 
-      {% if let Some(v) = versions.first() %}
+      {% if let Some(v) = selected_version %}
       {% if let Some(req) = v.sema_version_req %}
       <section>
         <div class="section-label">Sema Version</div>
@@ -277,7 +300,7 @@
         <table class="data-table" style="font-size:0.72rem;">
           {% for v in versions %}
           <tr>
-            <td{% if loop.first %} style="color:var(--gold);"{% endif %}>{{ v.version }}</td>
+            <td{% if let Some(selected) = selected_version %}{% if selected.version == v.version %} style="color:var(--gold);"{% endif %}{% endif %}>{{ v.version }}</td>
             <td style="color:var(--text-dim);">{{ v.published_at }}</td>
           </tr>
           {% endfor %}
