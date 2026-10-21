@@ -22,6 +22,7 @@ pub mod m008_search;
 mod m009_download_sum_index;
 mod m010_audit_action_order;
 mod m010_release_metadata;
+mod m011_api_docs;
 mod m011_version_blob_index;
 
 pub struct Migrator;
@@ -42,6 +43,7 @@ impl MigratorTrait for Migrator {
             Box::new(m010_release_metadata::Migration),
             Box::new(m010_audit_action_order::Migration),
             Box::new(m011_version_blob_index::Migration),
+            Box::new(m011_api_docs::Migration),
         ]
     }
 }

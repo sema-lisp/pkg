@@ -63,6 +63,53 @@ cargo run --features seed --bin seed -- --fresh --large
 For scale testing, `--huge` seeds 20k users and 1M packages (~4.5M versions) in
 under a minute on SQLite; `SEED_USERS` / `SEED_PACKAGES` override any preset.
 
+## Package API references
+
+Uploaded releases get an API reference at `/packages/{name}/{version}/api`.
+The package page links to it. The reference includes a searchable export index,
+signatures with distinct argument styling, syntax-highlighted definitions, and
+links to the stored source with line numbers. Two other formats use the same
+stored document:
+
+- Append `.md` to the reference URL for Markdown (`text/markdown`).
+- Append `/print` for a standalone HTML page with inline styles and no external
+  assets. Save that page for offline reading or print it from the browser.
+
+Extraction uses the pinned Sema reader, without running package code. It reads
+the explicit `[package].entrypoint` in `sema.toml`, literal top-level modules and
+their export lists, direct function declarations, and leading string docstrings
+with a following function body. It does not invent parameter types, examples,
+or a documentation syntax. Aliases, computed definitions, and ambiguous bindings
+are shown as unresolved. Unsupported source produces an explanation and a README
+link; it does not prevent publication.
+
+Each document records the archive checksum, source checksum, and parser version.
+The parser accepts at most 16 MiB of expanded archive data, 4,096 archive entries,
+512 KiB per source file, and 512 exports. Documents are stored once per release.
+GitHub-linked releases without a registry-stored archive cannot be documented
+this way; the registry does not fetch mutable repository files to fill gaps.
+
+Backfill existing stored uploads after deploying the migration:
+
+```bash
+sema-pkg package backfill-api-docs
+```
+
+The command verifies each stored archive's SHA-256, skips existing documents and
+GitHub-linked releases, and processes versions in bounded batches. Set
+`API_DOCS_ENABLED=false` to disable generation, links, routes, and backfill.
+
+For a local preview, start the registry with a separate database and blob
+directory on port 4177, then run:
+
+```bash
+node scripts/preview-api-docs.mjs http://127.0.0.1:4177
+```
+
+The script downloads checksum-verified public releases of `sema-retry`,
+`sema-cache`, and `sema-medley`, and publishes them to the local server through
+its normal API. It accepts only loopback targets and prints the reference URLs.
+
 ## Observability
 
 Traces (OpenTelemetry) and metrics (Prometheus) are built in and **off until
@@ -111,6 +158,7 @@ All configuration is via environment variables with sensible defaults:
 | `BASE_URL` | `http://localhost:3000` | Public URL (used in links; enables `Secure` session cookies when `https://`) |
 | `MAX_TARBALL_BYTES` | `52428800` (50 MB) | Max upload size |
 | `MAX_DEPENDENCIES` | `64` | Max dependencies per published version |
+| `API_DOCS_ENABLED` | `true` | Generate and serve API references for stored releases; also controls backfill. |
 | `GITHUB_CLIENT_ID` | — | GitHub OAuth app client ID (optional) |
 | `GITHUB_CLIENT_SECRET` | — | GitHub OAuth app secret (optional) |
 | `OAUTH_TOKEN_KEY` | — | 32-byte key encrypting stored GitHub tokens. **Required when GitHub OAuth is enabled** — the server refuses to boot if left at the insecure default. |

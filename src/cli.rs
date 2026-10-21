@@ -41,7 +41,8 @@ Usage: sema-pkg package <command>
 
   yank   <name> <version>            mark a version yanked
   remove <name>                      delete a package and all its versions
-  backfill-readmes                   (re)extract release documentation from stored tarballs";
+  backfill-readmes                   (re)extract release documentation from stored tarballs
+  backfill-api-docs                  generate missing API references from verified stored tarballs";
 
 /// Dispatch a CLI command and exit the process.
 pub async fn run(args: &[String]) -> ! {
@@ -284,6 +285,19 @@ async fn run_package(args: &[String]) -> Result<String, String> {
         Some("yank") => yank(&db, args.get(1), args.get(2)).await,
         Some("remove") => remove(&db, args.get(1)).await,
         Some("backfill-readmes") => backfill_readmes(&db).await,
+        Some("backfill-api-docs") => {
+            let config = Config::from_env();
+            if !config.api_docs_enabled {
+                return Err("API_DOCS_ENABLED is disabled".into());
+            }
+            let blobs = BlobStore::from_config(&config)?;
+            let (generated, skipped) = crate::api_docs::backfill(&db, &blobs)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(format!(
+                "API documentation: {generated} generated, {skipped} skipped"
+            ))
+        }
         _ => Err(PACKAGE_USAGE.to_string()),
     }
 }

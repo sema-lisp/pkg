@@ -214,6 +214,18 @@ pub async fn publish(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to store tarball: {e}")))?;
 
+    let api_document = if state.config.api_docs_enabled {
+        Some(
+            tokio::task::spawn_blocking(move || crate::api_docs::capture(&tarball))
+                .await
+                .map_err(|error| {
+                    ApiError::internal(format!("API documentation worker failed: {error}"))
+                })?,
+        )
+    } else {
+        None
+    };
+
     // All DB writes are atomic: on any failure nothing commits (the
     // transaction rolls back on drop), so a version row can never exist
     // with missing dependency rows.
@@ -255,6 +267,14 @@ pub async fn publish(
     )
     .await
     .map_err(|e| ApiError::internal(format!("Failed to insert version: {e:?}")))?;
+
+    if let Some(document) = api_document {
+        dal::api_docs::insert(&txn, version_model.id, &document)
+            .await
+            .map_err(|error| {
+                ApiError::internal(format!("Failed to store API documentation: {error}"))
+            })?;
+    }
 
     for dep in &metadata.dependencies {
         dal::deps::insert(&txn, version_model.id, &dep.name, &dep.version_req)

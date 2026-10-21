@@ -1,0 +1,13 @@
+(import "../src/api.sema")
+
+(define (assert-equal expected actual)
+  (if (= expected actual)
+    #t
+    (error (format "Expected ~a, got ~a" expected actual))))
+
+(assert-equal 0 (demo/clamp -2 0 10))
+(assert-equal 10 (demo/clamp 20 0 10))
+(assert-equal 4 (demo/clamp 4 0 10))
+(assert-equal 12 (demo/scale 4 3))
+(assert-equal 12 (demo/triple 4))
+(println "5 assertions passed")

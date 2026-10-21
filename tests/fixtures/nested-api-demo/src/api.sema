@@ -1,0 +1,15 @@
+(import "./internal/scale.sema")
+
+(module nested-api-demo
+  (export demo/clamp demo/scale demo/triple)
+
+  (define (demo/clamp value minimum maximum)
+    "Keep value within the inclusive minimum and maximum bounds."
+    (max minimum (min maximum value)))
+
+  (define (demo/scale value factor)
+    "Multiply value by factor using the package's internal helper."
+    (scale/apply value factor))
+
+  ;; This alias works at runtime, but the static extractor cannot infer its signature.
+  (define demo/triple scale/triple))

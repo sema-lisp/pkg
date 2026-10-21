@@ -6,6 +6,7 @@ pub mod github_sync_log;
 pub mod oauth_connection;
 pub mod owner;
 pub mod package;
+pub mod package_api_doc;
 pub mod package_version;
 pub mod report;
 pub mod session;

@@ -1,4 +1,5 @@
 pub mod api;
+pub mod api_docs;
 pub mod audit;
 pub mod auth;
 pub mod blob;
@@ -60,6 +61,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Web pages
         .route("/", get(web::index))
         .route("/search", get(web::search))
+        .route(
+            "/packages/{name}/{version}/api",
+            get(web::api_docs::reference),
+        )
+        .route(
+            "/packages/{name}/{version}/api/print",
+            get(web::api_docs::print),
+        )
+        .route(
+            "/packages/{name}/{version}/api.md",
+            get(web::api_docs::markdown),
+        )
+        .route(
+            "/packages/{name}/{version}/source/{*path}",
+            get(web::api_docs::source),
+        )
         .route(
             "/packages/{name}/{version}",
             get(web::package_version_detail),
