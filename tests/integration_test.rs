@@ -3784,3 +3784,75 @@ async fn test_release_history_pagination_keeps_selected_release_and_bounds_rows(
     assert!(html.contains("sema pkg add paged-history@1.122.0"));
     assert!(html.contains("Documentation for release 122"));
 }
+
+#[tokio::test]
+async fn test_package_removal_only_returns_distinct_unshared_upload_blobs() {
+    use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseBackend, Set};
+    use sema_pkg::{
+        dal,
+        entity::{package, package_version},
+    };
+    let (_app, state, _dir) = test_app_with_state().await;
+    let mut ids = Vec::new();
+    for name in ["remove-projection", "keep-projection"] {
+        let pkg = package::ActiveModel {
+            name: Set(name.into()),
+            description: Set(String::new()),
+            created_at: Set("2026-10-21 00:00:00".into()),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+        ids.push(pkg.id);
+    }
+    for (index, (package_id, blob_key)) in [
+        (ids[0], "unshared"),
+        (ids[0], "unshared"),
+        (ids[0], "shared"),
+        (ids[0], ""),
+        (ids[1], "shared"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        package_version::ActiveModel {
+            package_id: Set(package_id),
+            version: Set(format!("1.0.{index}")),
+            checksum_sha256: Set("test".into()),
+            blob_key: Set(blob_key.into()),
+            size_bytes: Set(1),
+            published_at: Set("2026-10-21 00:00:00".into()),
+            readme_html: Set(Some("x".repeat(64 * 1024))),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+    }
+    let keys = dal::packages::delete_by_name(&state.db, "remove-projection", "test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys, ["unshared"]);
+    let keys = dal::packages::delete_by_name(&state.db, "keep-projection", "test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys, ["shared"]);
+    if state.db.get_database_backend() == DatabaseBackend::Sqlite {
+        let plan = state.db.query_all(sema_pkg::db::stmt(DatabaseBackend::Sqlite,
+            "EXPLAIN QUERY PLAN SELECT 1 FROM package_versions WHERE blob_key = ? AND package_id <> ?",
+            ["shared".into(), ids[0].into()])).await.unwrap();
+        let details: Vec<String> = plan
+            .iter()
+            .map(|row| row.try_get("", "detail").unwrap())
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("idx_versions_blob_key")),
+            "{details:?}"
+        );
+    }
+}

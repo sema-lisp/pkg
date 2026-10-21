@@ -483,14 +483,21 @@ pub async fn delete_by_name<C: ConnectionTrait + TransactionTrait>(
         .all(&txn)
         .await?;
 
-    // The blob keys this package's versions reference, before deleting them.
-    let keys: Vec<String> = package_version::Entity::find()
-        .filter(package_version::Column::PackageId.eq(pkg_id))
-        .all(&txn)
+    // Find unshared blobs before deleting their versions. Select only keys:
+    // release documents can be large, and GitHub versions have no local blob.
+    let orphaned = txn
+        .query_all(crate::db::stmt(
+            txn.get_database_backend(),
+            "SELECT DISTINCT pv.blob_key FROM package_versions pv
+             WHERE pv.package_id = ? AND pv.blob_key <> ''
+             AND NOT EXISTS (SELECT 1 FROM package_versions other
+                 WHERE other.blob_key = pv.blob_key AND other.package_id <> pv.package_id)",
+            [pkg_id.into()],
+        ))
         .await?
-        .into_iter()
-        .map(|v| v.blob_key)
-        .collect();
+        .iter()
+        .map(|row| row.try_get("", "blob_key"))
+        .collect::<Result<Vec<String>, DbErr>>()?;
 
     // Delete dependencies via version_id join (raw SQL for subquery)
     txn
@@ -546,21 +553,6 @@ pub async fn delete_by_name<C: ConnectionTrait + TransactionTrait>(
     )
     .await?;
 
-    // A key is orphaned only if no remaining version (of any package) uses it.
-    let mut orphaned = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for key in keys {
-        if !seen.insert(key.clone()) {
-            continue;
-        }
-        let still_used = package_version::Entity::find()
-            .filter(package_version::Column::BlobKey.eq(&key))
-            .count(&txn)
-            .await?;
-        if still_used == 0 {
-            orphaned.push(key);
-        }
-    }
     txn.commit().await?;
     Ok(Some(orphaned))
 }
