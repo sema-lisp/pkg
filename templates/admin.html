@@ -390,6 +390,10 @@
 .audit-actor {
   color: var(--gold);
 }
+.audit-message { font-size: 0.75rem; padding: 1rem 0; }
+.audit-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.audit-pagination .action-btn { padding: 0.3rem 0.6rem; }
+.audit-pagination span { font-size: 0.75rem; }
 
 .audit-action {
   color: var(--text);
@@ -402,12 +406,15 @@
   .sidebar-label { display: none; }
   .sidebar-link { padding: 0.65rem; }
   .admin-main { padding: 1.25rem; }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit-entry { grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
   .audit-time { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .audit-time time { margin: 0; }
   .audit-field { width: 100%; }
   .audit-field:first-child { flex-basis: 100%; max-width: none; }
   .audit-field :is(input, select) { font-size: 1rem; min-height: 44px; }
+  .audit-pagination .action-btn { min-height: 44px; }
+  .confirm-reason { font-size: 1rem; }
 }
 
 /* ── Confirm dialog ── */
@@ -444,9 +451,8 @@
   justify-content: flex-end;
 }
 
-.confirm-reason-field { margin-bottom: 1.25rem; }
-.confirm-reason-field label { display: block; font-size: 0.75rem; color: var(--text-bright); margin-bottom: 0.4rem; }
-.confirm-reason { width: 100%; padding: 0.6rem; background: var(--bg); color: var(--text-bright); border: 1px solid var(--border-focus); border-radius: 4px; font: inherit; font-size: 0.8rem; resize: vertical; }
+.confirm-dialog .form-label { color: var(--text); }
+.confirm-reason { max-width: none; resize: vertical; }
 
 /* ── Toast ── */
 .toast {
@@ -493,7 +499,7 @@
       <div class="sidebar-link" data-testid="nav-audit" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h9v1H2V9zm0 3h7v1H2v-1z"/></svg>
         Audit Log
-        <span class="sidebar-count" x-text="auditTotal || ''"></span>
+        <span class="sidebar-count" x-text="auditCount ? auditCount.toLocaleString() : ''"></span>
       </div>
     </div>
     <div class="sidebar-section">
@@ -552,7 +558,7 @@
           {% include "admin_audit_entry.html" %}
         </template>
         <template x-if="recentActivity.length === 0">
-          <li style="color:var(--text-dim); font-size:0.72rem; padding:1rem 0;">No recent activity.</li>
+          <li class="audit-message">No recent activity.</li>
         </template>
       </ol>
     </div>
@@ -710,24 +716,23 @@
         </div>
       </div>
 
-      <p class="audit-meta" x-text="auditTotal + (auditTotal === 1 ? ' event' : ' events')"></p>
-      <ol class="audit-list" aria-label="Audit events">
+      <p class="audit-meta" role="status" x-text="auditLoading ? 'Loading events…' : auditError || auditTotal.toLocaleString() + (auditTotal === 1 ? ' event' : ' events')"></p>
+      <button class="action-btn action-btn-ghost" x-show="auditError" @click="loadAudit()">Try again</button>
+      <ol class="audit-list" aria-label="Audit events" :aria-busy="auditLoading" x-show="!auditError">
         <template x-for="entry in auditLog" :key="entry.id">
           {% include "admin_audit_entry.html" %}
         </template>
-        <template x-if="auditLog.length === 0">
-          <li style="color:var(--text); font-size:0.72rem; padding:1rem 0;">No audit entries found.</li>
+        <template x-if="!auditLoading && auditLog.length === 0">
+          <li class="audit-message">No audit entries found.</li>
         </template>
       </ol>
-      <div style="display:flex; justify-content:center; align-items:center; gap:0.75rem; margin-top:1rem; padding-top:0.75rem; border-top:1px solid var(--border);"
-           x-show="auditTotal > perPage">
-        <button class="action-btn action-btn-ghost" style="padding:0.3rem 0.6rem;"
-                @click="auditPage--; loadAudit()" :disabled="auditPage <= 1">← Prev</button>
-        <span style="font-size:0.65rem; color:var(--text-dim);"
-              x-text="auditPage + ' / ' + Math.ceil(auditTotal / perPage)"></span>
-        <button class="action-btn action-btn-ghost" style="padding:0.3rem 0.6rem;"
-                @click="auditPage++; loadAudit()" :disabled="auditPage >= Math.ceil(auditTotal / perPage)">Next →</button>
-      </div>
+      <nav class="audit-pagination" aria-label="Audit pages" x-show="auditTotal > perPage && !auditError">
+        <button class="action-btn action-btn-ghost"
+                @click="auditPage--; loadAudit()" :disabled="auditLoading || auditPage <= 1">← Prev</button>
+        <span x-text="auditPage.toLocaleString() + ' / ' + Math.ceil(auditTotal / perPage).toLocaleString()"></span>
+        <button class="action-btn action-btn-ghost"
+                @click="auditPage++; loadAudit()" :disabled="auditLoading || auditPage >= Math.ceil(auditTotal / perPage)">Next →</button>
+      </nav>
     </div>
 
     <!-- Reports -->
@@ -890,9 +895,9 @@
         <div class="confirm-title" data-testid="confirm-title" x-text="confirm.title"></div>
         <div class="confirm-body" x-html="confirm.body"></div>
         <template x-if="confirm.action === 'ban'">
-          <div class="confirm-reason-field">
-            <label for="ban-reason">Reason (optional)</label>
-            <textarea id="ban-reason" name="reason" class="confirm-reason" data-testid="ban-reason" rows="3" x-model="confirm.reason"></textarea>
+          <div class="form-group">
+            <label class="form-label" for="ban-reason">Reason (optional)</label>
+            <textarea id="ban-reason" name="reason" class="form-input confirm-reason" data-testid="ban-reason" rows="3" x-model="confirm.reason"></textarea>
           </div>
         </template>
         <div class="confirm-actions">
@@ -972,6 +977,9 @@ function adminPanel() {
     reportTotal: 0,
     auditPage: 1,
     auditTotal: 0,
+    auditCount: 0,
+    auditLoading: false,
+    auditError: '',
     perPage: 50,
 
     stats: { total_users: 0, total_packages: 0, banned_users: 0, open_reports: 0 },
@@ -982,13 +990,12 @@ function adminPanel() {
     reports: [],
 
     // Track which tabs have been loaded to avoid redundant fetches
-    _loaded: { users: false, packages: false, audit: false, reports: false },
+    _loaded: { users: false, packages: false, reports: false },
     _auditRequest: 0,
 
     async init() {
       await Promise.all([
         this.loadStats(),
-        this.loadAudit(),
         this.loadRecentActivity(),
         this.loadReports(),
       ]);
@@ -1080,7 +1087,11 @@ function adminPanel() {
     async loadRecentActivity() {
       try {
         const res = await fetch('/api/v1/admin/audit?per_page=8');
-        if (res.ok) this.recentActivity = (await res.json()).entries || [];
+        if (res.ok) {
+          const data = await res.json();
+          this.recentActivity = data.entries;
+          this.auditCount = data.total;
+        }
       } catch (e) {
         console.error('Failed to load recent activity:', e);
       }
@@ -1088,6 +1099,8 @@ function adminPanel() {
 
     async loadAudit() {
       const request = ++this._auditRequest;
+      this.auditLoading = true;
+      this.auditError = '';
       try {
         const params = new URLSearchParams();
         if (this.auditSearch) params.set('q', this.auditSearch);
@@ -1095,15 +1108,16 @@ function adminPanel() {
         params.set('page', this.auditPage);
         params.set('per_page', this.perPage);
         const res = await fetch('/api/v1/admin/audit?' + params);
-        if (res.ok) {
-          const data = await res.json();
-          if (request !== this._auditRequest) return;
-          this.auditLog = data.entries || [];
-          this.auditTotal = data.total || 0;
-          this._loaded.audit = true;
-        }
+        if (!res.ok) throw new Error('Audit request failed');
+        const data = await res.json();
+        if (request !== this._auditRequest) return;
+        this.auditLog = data.entries;
+        this.auditTotal = data.total;
+        if (!this.auditSearch && this.auditFilter === 'all') this.auditCount = data.total;
       } catch (e) {
-        console.error('Failed to load audit log:', e);
+        if (request === this._auditRequest) this.auditError = 'Could not load audit events. Try again.';
+      } finally {
+        if (request === this._auditRequest) this.auditLoading = false;
       }
     },
 

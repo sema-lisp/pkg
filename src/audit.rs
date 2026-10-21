@@ -95,7 +95,8 @@ mod tests {
                 offset: 0,
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(total, 1);
         assert_eq!(entries[0].actor, "system");
         assert_eq!(entries[0].target_type.as_deref(), Some("package"));

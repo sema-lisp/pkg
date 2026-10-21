@@ -2594,6 +2594,102 @@ async fn test_admin_audit_filter() {
 }
 
 #[tokio::test]
+async fn test_admin_audit_pagination_is_bounded_and_stable() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "page-admin", "page-admin@test.com").await;
+    state.db.execute_unprepared(
+        "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<501)
+         INSERT INTO audit_log(actor, action, target_type, target_name, detail, created_at)
+         SELECT 'pagination-fixture', 'publish', 'package', 'page-test', '1.0.0', '2026-01-01 12:00:00' FROM seq",
+    ).await.unwrap();
+
+    for filter in [
+        "action=publish",
+        "q=pagination-fixture",
+        "action=publish&q=pagination-fixture",
+    ] {
+        let mut previous_id = i64::MAX;
+        let mut seen = std::collections::HashSet::new();
+        for page in 1..=12 {
+            let res = get_with_session(
+                app.clone(),
+                &format!("/api/v1/admin/audit?{filter}&page={page}"),
+                &session,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let body = body_json(res).await;
+            assert_eq!(body["total"], 501);
+            assert_eq!(body["per_page"], 50);
+            let entries = body["entries"].as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                match page {
+                    11 => 1,
+                    12 => 0,
+                    _ => 50,
+                }
+            );
+            for entry in entries {
+                let id = entry["id"].as_i64().unwrap();
+                assert!(id < previous_id, "Equal timestamps must order by ID");
+                assert!(seen.insert(id), "Pages must not overlap");
+                previous_id = id;
+            }
+        }
+        assert_eq!(seen.len(), 501);
+    }
+
+    for (requested, expected) in [(-1, 1), (0, 1), (1, 1), (500, 200)] {
+        let res = get_with_session(
+            app.clone(),
+            &format!("/api/v1/admin/audit?action=publish&per_page={requested}"),
+            &session,
+        )
+        .await;
+        let body = body_json(res).await;
+        assert_eq!(body["per_page"], expected);
+        assert_eq!(body["entries"].as_array().unwrap().len(), expected as usize);
+    }
+    let res = get_with_session(
+        app.clone(),
+        "/api/v1/admin/audit?page=9223372036854775807",
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let plan = state.db.query_all(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "EXPLAIN QUERY PLAN SELECT id, actor, action, target_type, target_name, detail, created_at
+         FROM audit_log WHERE action = 'publish' ORDER BY created_at DESC, id DESC LIMIT 50",
+    )).await.unwrap();
+    let plan = plan
+        .iter()
+        .map(|row| row.try_get::<String>("", "detail").unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plan.contains("idx_audit_log_action_order"), "{plan}");
+    assert!(
+        !plan.contains("TEMP B-TREE"),
+        "Must not sort full history: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_audit_read_failure_is_not_an_empty_log() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "fail-admin", "fail-admin@test.com").await;
+    state
+        .db
+        .execute_unprepared("DROP TABLE audit_log")
+        .await
+        .unwrap();
+    let res = get_with_session(app, "/api/v1/admin/audit", &session).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn test_admin_reports_lifecycle() {
     let (app, state, _dir) = test_app_with_state().await;
     let admin_session = register_admin(app.clone(), &state, "rl-admin", "rl-admin@test.com").await;

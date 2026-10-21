@@ -96,6 +96,7 @@ test.describe('Admin Panel', () => {
     await api.setSession(page.context(), adminSession);
 
     // Navigate and wait for stats to render
+    const statsResponse = page.waitForResponse(res => new URL(res.url()).pathname === '/api/v1/admin/stats');
     await page.goto('/admin');
     await expect(page.getByTestId('stats-grid')).toBeVisible({ timeout: 15000 });
 
@@ -104,10 +105,7 @@ test.describe('Admin Panel', () => {
     await expect(totalUsers).toBeVisible({ timeout: 10000 });
     // Stats are cached for 30 seconds; verify the displayed response rather
     // than assuming the cache already includes this test's new records.
-    const statsResponse = await request.get(`${BASE}/api/v1/admin/stats`, {
-      headers: { cookie: `session=${adminSession}` },
-    });
-    const stats = await statsResponse.json();
+    const stats = await (await statsResponse).json();
     await expect(totalUsers).toHaveText(String(stats.total_users));
     await expect(page.getByTestId('stat-packages')).toHaveText(String(stats.total_packages));
   });
@@ -408,6 +406,59 @@ test.describe('Admin Panel', () => {
     await page.getByTestId('nav-dashboard').click();
     await expect(recent).toContainText(victim);
     await expect(recent).toContainText(pkgName);
+  });
+
+  test('audit pages load on demand, paginate, and recover from errors', async ({ page, request }) => {
+    const username = unique('adm-pages');
+    const session = await api.register(request, username, `${username}@test.com`);
+    makeAdmin(username);
+    const fixture = unique('audit-pages');
+    execFileSync('sqlite3', [DB_PATH, `
+      WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<55)
+      INSERT INTO audit_log(actor, action, target_type, target_name, detail, created_at)
+      SELECT '${fixture}', 'publish', 'package', 'page-event-' || n, '1.0.0', '2026-01-01 12:00:00' FROM seq;
+    `]);
+    const auditRequests: string[] = [];
+    page.on('request', req => {
+      if (req.url().includes('/api/v1/admin/audit?')) auditRequests.push(req.url());
+    });
+    await api.setSession(page.context(), session);
+    await page.goto('/admin');
+    await expect(page.getByRole('list', { name: 'Recent activity' }).getByTestId('audit-entry')).toHaveCount(8);
+    expect(auditRequests).toHaveLength(1);
+    expect(new URL(auditRequests[0]).searchParams.get('per_page')).toBe('8');
+    const count = await page.getByTestId('nav-audit').locator('.sidebar-count').textContent();
+
+    await page.getByTestId('nav-audit').click();
+    await page.getByLabel('Search events').fill(fixture);
+    const events = page.getByRole('list', { name: 'Audit events' });
+    await expect(events).toContainText('page-event-55');
+    await expect(events.getByTestId('audit-entry')).toHaveCount(50);
+    await expect(page.getByTestId('nav-audit').locator('.sidebar-count')).toHaveText(count!);
+    const pages = page.getByRole('navigation', { name: 'Audit pages' });
+    await expect(pages).toContainText('1 / 2');
+    await pages.getByRole('button', { name: 'Next' }).click();
+    await expect(events.getByTestId('audit-entry')).toHaveCount(5);
+    await expect(events).toContainText('page-event-1');
+    await expect(pages).toContainText('2 / 2');
+    await expect(pages.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await pages.getByRole('button', { name: 'Prev' }).click();
+    await expect(events.getByTestId('audit-entry')).toHaveCount(50);
+    await expect(events).toContainText('page-event-55');
+
+    let fail = true;
+    await page.route('**/api/v1/admin/audit?*', route => {
+      if (fail) {
+        fail = false;
+        return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"test failure"}' });
+      }
+      return route.continue();
+    });
+    await page.getByLabel('Search events').fill('no-match-after-retry');
+    await expect(page.getByRole('status')).toHaveText('Could not load audit events. Try again.');
+    await expect(events).toBeHidden();
+    await page.getByRole('button', { name: 'Try again' }).click();
+    await expect(events).toContainText('No audit entries found.');
   });
 
   test('audit filters match stored actions and sparse entries render safely on mobile', async ({ page, request }) => {

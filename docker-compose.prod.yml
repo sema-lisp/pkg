@@ -1,6 +1,5 @@
 # Production stack: single-node SQLite + Litestream continuous replication to R2,
-# with package tarballs in the same (or a separate) R2 bucket. The VM holds no
-# irreplaceable state — see DEPLOYMENT.md (Path A) for restore + caveats.
+# with package tarballs in the same (or a separate) R2 bucket.
 #
 #   docker compose -f docker-compose.prod.yml up -d
 #

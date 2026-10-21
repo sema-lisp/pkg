@@ -478,18 +478,22 @@ pub async fn list_audit(
     State(state): State<Arc<AppState>>,
     AdminUser(_user): AdminUser,
     Query(params): Query<AuditListParams>,
-) -> impl IntoResponse {
-    let per_page = params.per_page.unwrap_or(50).min(200);
+) -> Result<impl IntoResponse, ApiError> {
+    let per_page = params.per_page.unwrap_or(50).clamp(1, 200);
     let page = params.page.unwrap_or(1).max(1);
-    let offset = (page - 1) * per_page;
+    let offset = (page - 1)
+        .checked_mul(per_page)
+        .ok_or_else(|| ApiError::bad_request("Page is too large"))?;
 
     let filter = crate::dal::audit_log::AuditFilter {
-        q: params.q,
+        q: params.q.filter(|q| !q.trim().is_empty()),
         action: params.action,
         limit: per_page,
         offset,
     };
-    let (rows, total) = crate::dal::audit_log::list(&state.db, &filter).await;
+    let (rows, total) = crate::dal::audit_log::list(&state.db, &filter)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     let entries: Vec<serde_json::Value> = rows
         .iter()
@@ -506,12 +510,12 @@ pub async fn list_audit(
         })
         .collect();
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "entries": entries,
         "total": total,
         "page": page,
         "per_page": per_page,
-    }))
+    })))
 }
 
 // ── Reports ──
