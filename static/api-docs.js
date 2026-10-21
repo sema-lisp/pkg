@@ -15,7 +15,7 @@
     root.querySelector('.api-filter').hidden = false;
     const searchable = [...index].map(([id, item]) => {
       const entry = entries.find(entry => entry.id === id);
-      return { item, entry, text: (entry?.textContent ?? item.dataset.apiSearch).toLocaleLowerCase() };
+      return { item, entry, text: item.dataset.apiSearch.toLocaleLowerCase() };
     });
     input.addEventListener('input', () => {
       const query = input.value.trim().toLocaleLowerCase();
@@ -62,20 +62,5 @@
       }
     }, { rootMargin: '-10% 0px -65% 0px' });
     entries.forEach(entry => observer.observe(entry));
-  }
-  if (root.hasAttribute('data-source-view')) {
-    const updateSourceLocation = () => {
-      const selectedLine = Number(location.hash.match(/^#L(\d+)$/)?.[1]);
-      let selected;
-      for (const item of index.values()) {
-        const link = item.querySelector('a');
-        link.removeAttribute('aria-current');
-        const line = Number(link.hash.match(/^#L(\d+)$/)?.[1]);
-        if (line <= selectedLine && (!selected || line > selected.line)) selected = { line, link };
-      }
-      selected?.link.setAttribute('aria-current', 'location');
-    };
-    window.addEventListener('hashchange', updateSourceLocation);
-    updateSourceLocation();
   }
 })();

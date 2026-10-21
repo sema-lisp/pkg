@@ -37,11 +37,14 @@ responses have no HTML layout width.
 
 ## Related reference changes
 
-- The package's API reference link sits in its metadata sidebar.
+- The package's API reference link sits directly below Repository in its metadata sidebar.
 - API and source views share the package header, breadcrumbs, format actions,
-  and file/export navigation. The source view no longer has a large back link.
-- `package.sema` is the file node above its exports. The index has consistent
-  row spacing. With JavaScript, the tree starts collapsed at 800px and below,
+  and export navigation. Every export link goes to its API entry from either view.
+  The source view no longer has a large back link.
+- The source-file link is below the exports. Search uses a placeholder and an
+  accessible name, with no visible label or count. Matching counts are announced
+  to screen readers. UI ellipses use three periods. The index has consistent
+  row spacing. With JavaScript, the index starts collapsed at 800px and below,
   with a bounded, scrollable list when expanded. Without JavaScript, the native
   disclosure remains open by default.
 - Source excerpts remove their enclosing module's indentation for display.
@@ -57,3 +60,37 @@ and [copy](https://primer.style/product/getting-started/rails/components/clipboa
 patterns: compact presentation, access to the complete value, explicit copy
 action, and success feedback. Twelve characters is a local display choice,
 not a checksum verification rule or a claim of uniqueness.
+
+## Package sidebar order
+
+Compared current package pages on 2026-10-21:
+
+| Registry | Observed order |
+| --- | --- |
+| [npm](https://www.npmjs.com/package/axios) | Install, Repository, Homepage, downloads, version/license/publish metadata, collaborators, analysis/report links |
+| [Packagist](https://packagist.org/packages/symfony/console) | Package info (repository, homepage), security, funding, statistics |
+| [NuGet](https://www.nuget.org/packages/Newtonsoft.Json) | Downloads, About (updated date, project website, repository, license and package actions), owners, tags |
+| [crates.io](https://crates.io/crates/serde) | Metadata, install, homepage, documentation, repository, owners, categories; download statistics below |
+
+There is no universal order. These examples group project links together and
+place owners after those links where an owner group is present. Pkg uses
+Repository, Documentation (API reference), Downloads, Sema Version,
+Dependencies, Versions, Owners, then reporting. Optional fields are omitted
+when unavailable; GitHub-linked packages retain their Source/provenance block
+above these groups. The install command stays above the README.
+
+The package grid uses a zero-minimum flexible README column. This keeps long
+code lines inside their scroll area instead of pushing the sidebar outside the
+viewport. Repository URLs can wrap within their column.
+
+## Nested package preview
+
+`tests/fixtures/nested-api-demo` is a runnable local fixture, not a public release.
+Its declared entrypoint is `src/api.sema`; it also contains `src/internal/`,
+`tests/`, and `examples/`. Two direct functions are documented. The imported
+`demo/triple` alias remains unresolved, as the extractor does not follow imports.
+The source viewer exposes the entrypoint only, not an archive file browser.
+
+With the preview server running, seed this fixture using
+`node scripts/preview-api-docs.mjs http://localhost:4177 --nested-fixture`.
+Run its five assertions with `sema tests/api.sema` from the fixture directory.

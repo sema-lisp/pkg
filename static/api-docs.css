@@ -10,18 +10,15 @@
 .api-toolbar nav { display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: 0.75rem; }
 .api-layout { display: grid; grid-template-columns: 14.5rem minmax(0, 1fr); gap: 1.5rem; padding-block-start: 1.5rem; }
 .api-index { align-self: start; position: sticky; inset-block-start: 1.5rem; max-block-size: calc(100dvh - 3rem); overflow-y: auto; padding-inline-end: 1rem; padding-block-end: 0.5rem; border-inline-end: 1px solid var(--border); }
-.api-index-home { display: block; font-size: 0.75rem; margin-block-end: 1.25rem; color: var(--text); }
-.api-index-home[aria-current] { color: var(--gold); }
 .api-index-disclosure > summary { display: none; font-size: 0.8rem; color: var(--text-bright); cursor: pointer; padding-block: 0.75rem; }
 .api-index-disclosure > summary span { color: var(--text); margin-inline-start: 0.5rem; }
-.api-filter label { display: block; font-size: 0.75rem; color: var(--text-bright); margin-block-end: 0.5rem; }
+.api-filter { margin-block-end: 0.75rem; }
 .api-filter input { width: 100%; min-width: 0; border: 1px solid var(--border-focus); border-radius: 4px; background: var(--bg-raised); color: var(--text-bright); font: 0.75rem var(--mono); padding: 0.5rem 0.65rem; caret-color: var(--gold); }
 .api-filter input::placeholder { color: var(--text); }
-.api-filter p { font-size: 0.75rem; margin-block: 0.4rem 1rem; color: var(--text); }
-.api-tree-file { display: flex; align-items: center; gap: 0.5rem; padding-block: 0.35rem; font-size: 0.75rem; color: var(--text-bright); overflow-wrap: anywhere; }
-.api-tree-file svg { flex-shrink: 0; }
-.api-tree-file[aria-current] { color: var(--gold); }
-.api-index ul { list-style: none; padding: 0 0 0 0.65rem; margin: 0.5rem 0 0 0.4rem; border-inline-start: 1px solid var(--border); }
+.api-source-file { margin-block-start: 1rem; display: flex; align-items: center; gap: 0.5rem; padding-block: 0.35rem; font-size: 0.75rem; color: var(--text-bright); overflow-wrap: anywhere; }
+.api-source-file svg { flex-shrink: 0; }
+.api-source-file[aria-current] { color: var(--gold); }
+.api-index ul { list-style: none; padding: 0; margin: 0; }
 .api-index li a { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-block-size: 2rem; padding: 0.3rem 0.4rem; border-radius: 3px; color: var(--text); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
 .api-index li a:hover, .api-index li a[aria-current] { color: var(--gold); background: var(--gold-glow); opacity: 1; }
 .api-index small { font-size: 0.75rem; }
@@ -62,7 +59,7 @@
 .api-file-details { margin-block-end: 1rem; font-size: 0.75rem; }
 .api-file-details summary { cursor: pointer; width: fit-content; }
 .api-file-details p { margin-block-start: 0.5rem; }
-.api-copy-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.api-copy-status, #api-results { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .api-source-code { overflow-x: auto; padding-block: 0.75rem; border-block: 1px solid var(--border); background: var(--bg-code); font: 0.78rem/1.75 var(--mono); tab-size: 2; }
 .api-index, .api-definition pre, .api-source-code { scrollbar-color: var(--border-focus) var(--bg-code); scrollbar-width: thin; }
 .api-source-line { display: flex; min-width: max-content; scroll-margin-block-start: 1rem; }

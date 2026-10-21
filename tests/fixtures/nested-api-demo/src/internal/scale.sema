@@ -1,0 +1,10 @@
+(module scale
+  (export scale/apply scale/triple)
+
+  (define (scale/apply value factor)
+    "Multiply two numbers."
+    (* value factor))
+
+  (define (scale/triple value)
+    "Multiply value by three."
+    (scale/apply value 3)))

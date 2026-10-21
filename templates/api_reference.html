@@ -3,7 +3,7 @@
 {% block description %}API declarations for {{ name }} {{ version }}.{% endblock %}
 {% block seo_urls %}<link rel="canonical" href="{{ base_url }}/packages/{{ name }}/{{ version }}/api">{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/api-docs.css">
+<link rel="stylesheet" href="/static/api-docs.css?v=fd033cf3d1d9">
 <link rel="alternate" type="text/markdown" href="/packages/{{ name }}/{{ version }}/api.md">
 {% endblock %}
 {% block header_center %}{% include "partials/package_search.html" %}{% endblock %}
@@ -41,4 +41,4 @@
   <span class="api-copy-status" role="status" aria-live="polite"></span>
 </main>
 {% endblock %}
-{% block scripts %}<script src="/static/api-docs.js" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/api-docs.js?v=5284368b1b35" defer></script>{% endblock %}

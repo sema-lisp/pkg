@@ -1,12 +1,15 @@
-// Copy verified public releases into a running local registry for UI development.
+// Copy verified public releases, or a local nested fixture, into a preview registry.
 import { createHash, randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const target = new URL(process.argv[2] ?? 'http://127.0.0.1:4177');
 if (target.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) {
   throw new Error('The preview target must be a loopback HTTP server.');
 }
 const origin = 'https://pkg.sema-lang.com';
-const packages = ['sema-retry', 'sema-cache', 'sema-medley'];
+const nestedFixture = process.argv.includes('--nested-fixture');
+const packages = nestedFixture ? ['nested-api-demo'] : ['sema-retry', 'sema-cache', 'sema-medley'];
 async function checked(url, options) {
   const response = await fetch(url, { ...options, redirect: 'error' });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
@@ -15,7 +18,9 @@ async function checked(url, options) {
 
 let token;
 for (const name of packages) {
-  const metadata = await (await checked(`${origin}/api/v1/packages/${name}`)).json();
+  const metadata = nestedFixture
+    ? { package: { description: 'Local preview fixture with nested source, an imported alias, and a test suite' }, versions: [{ version: '0.1.0' }] }
+    : await (await checked(`${origin}/api/v1/packages/${name}`)).json();
   const release = metadata.versions.find(item => !item.yanked && !item.tarball_url);
   if (!release) throw new Error(`${name}: no stored release is available`);
   const path = `/packages/${name}/${release.version}`;
@@ -25,9 +30,11 @@ for (const name of packages) {
     continue;
   }
   if (existing.status !== 404) throw new Error(`Local registry: HTTP ${existing.status}`);
-  const archive = await (await checked(`${origin}/api/v1${path}/download`)).arrayBuffer();
+  const archive = nestedFixture
+    ? execFileSync('tar', ['-czf', '-', '-C', fileURLToPath(new URL('../tests/fixtures/nested-api-demo/', import.meta.url)), '.'], { env: { ...process.env, COPYFILE_DISABLE: '1' } })
+    : await (await checked(`${origin}/api/v1${path}/download`)).arrayBuffer();
   const digest = createHash('sha256').update(Buffer.from(archive)).digest('hex');
-  if (digest !== release.checksum_sha256) throw new Error(`${name}: archive checksum mismatch`);
+  if (!nestedFixture && digest !== release.checksum_sha256) throw new Error(`${name}: archive checksum mismatch`);
   if (!token) {
     const username = `preview-${randomBytes(6).toString('hex')}`;
     const registration = await checked(new URL('/api/v1/auth/register', target), {
@@ -52,5 +59,5 @@ for (const name of packages) {
   await checked(new URL(`/api/v1${path}`, target), {
     method: 'PUT', headers: { authorization: `Bearer ${token}` }, body: form,
   });
-  console.log(`${new URL(`${path}/api`, target)} (verified ${digest})`);
+  console.log(`${new URL(`${path}/api`, target)} (${nestedFixture ? 'local fixture' : 'verified release'}: ${digest})`);
 }

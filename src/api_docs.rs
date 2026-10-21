@@ -153,7 +153,16 @@ fn source_from_archive(bytes: &[u8]) -> Result<Source, CaptureError> {
             ));
         }
         let mut entry = entry?;
-        let path = archive_path(&entry.path()?).ok_or(CaptureError::Unsupported(
+        let entry_path = entry.path()?;
+        // `tar -C package .` emits a root directory header before its files.
+        if entry.header().entry_type().is_dir()
+            && entry_path
+                .components()
+                .all(|part| part == Component::CurDir)
+        {
+            continue;
+        }
+        let path = archive_path(&entry_path).ok_or(CaptureError::Unsupported(
             "The archive contains an unsafe source path.",
         ))?;
         if !paths.insert(path.clone()) {
@@ -387,6 +396,12 @@ mod tests {
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut tar = tar::Builder::new(encoder);
+        let mut root = tar::Header::new_gnu();
+        root.set_entry_type(tar::EntryType::Directory);
+        root.set_mode(0o755);
+        root.set_size(0);
+        root.set_cksum();
+        tar.append_data(&mut root, "./", std::io::empty()).unwrap();
         for (path, source) in files {
             let mut header = tar::Header::new_gnu();
             header.set_mode(0o644);
@@ -427,6 +442,40 @@ mod tests {
             .as_ref()
             .unwrap()
             .starts_with("Run thunk, retrying failures"));
+    }
+    #[test]
+    fn nested_fixture_documents_entrypoint_without_following_imports() {
+        let document = capture(&archive(&[
+            (
+                "sema.toml",
+                include_str!("../tests/fixtures/nested-api-demo/sema.toml"),
+            ),
+            (
+                "src/api.sema",
+                include_str!("../tests/fixtures/nested-api-demo/src/api.sema"),
+            ),
+            (
+                "src/internal/scale.sema",
+                include_str!("../tests/fixtures/nested-api-demo/src/internal/scale.sema"),
+            ),
+            (
+                "tests/api.sema",
+                include_str!("../tests/fixtures/nested-api-demo/tests/api.sema"),
+            ),
+        ]));
+        assert_eq!(document.status, Status::Partial, "{}", document.message);
+        assert_eq!(document.source.unwrap().path, "src/api.sema");
+        assert_eq!(document.entries.len(), 3);
+        assert_eq!(
+            document.entries[0].signature().as_deref(),
+            Some("(demo/clamp value minimum maximum)")
+        );
+        assert_eq!(
+            document.entries[1].signature().as_deref(),
+            Some("(demo/scale value factor)")
+        );
+        assert_eq!(document.entries[2].name, "demo/triple");
+        assert!(document.entries[2].signature().is_none());
     }
     #[test]
     fn docstrings_need_a_following_body_and_exports_must_be_literal() {
