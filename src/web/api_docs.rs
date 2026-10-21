@@ -93,10 +93,9 @@ async fn release(state: &AppState, name: &str, version: &str) -> Result<Release,
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let version = dal::versions::list_candidates_for_package(&state.db, package.id)
+    let version = dal::versions::find_candidate(&state.db, package.id, version)
         .await
-        .into_iter()
-        .find(|candidate| candidate.version == version)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let document = dal::api_docs::find(&state.db, version.id)
         .await
