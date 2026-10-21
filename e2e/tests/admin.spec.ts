@@ -824,3 +824,31 @@ test.describe('Admin Panel', () => {
     await expect(page.getByTestId('toast-success')).toBeVisible({ timeout: 10000 });
   });
 });
+
+test('sidebar badges stay hidden for empty counts with lazy audit loading', async ({ page, request }) => {
+  const username = unique('badges');
+  const session = await api.register(request, username, `${username}@test.com`);
+  makeAdmin(username);
+  await api.setSession(page.context(), session);
+  let count: number | null | undefined = 0;
+  await page.route('**/api/v1/admin/stats', route => route.fulfill({ json: {
+    total_users: count, total_packages: count, open_reports: count, banned_users: 0,
+  } }));
+  await page.route('**/api/v1/admin/audit?*', route => route.fulfill({ json: { entries: [], total: count } }));
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const value of [0, null, undefined, 1234, 0]) {
+    count = value;
+    await Promise.all([
+      page.waitForResponse(response => response.url().includes('/api/v1/admin/audit?')),
+      page.goto('/admin'),
+    ]);
+    for (const tab of ['audit', 'users', 'packages', 'reports']) {
+      const badge = page.getByTestId(`nav-${tab}`).locator('.sidebar-count');
+      if (value) await expect(badge).toBeVisible();
+      else await expect(badge).toBeHidden();
+    }
+    if (value) await expect(page.getByTestId('nav-audit')).toContainText('1,234');
+  }
+  expect(errors).toEqual([]);
+});

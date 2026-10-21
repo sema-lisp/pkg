@@ -499,7 +499,7 @@
       <div class="sidebar-link" data-testid="nav-audit" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h9v1H2V9zm0 3h7v1H2v-1z"/></svg>
         Audit Log
-        <span class="sidebar-count" x-show="auditCount > 0" x-text="auditCount.toLocaleString()" x-cloak></span>
+        <span class="sidebar-count" x-show="auditCount > 0" x-text="(auditCount || 0).toLocaleString()" x-cloak></span>
       </div>
     </div>
     <div class="sidebar-section">
