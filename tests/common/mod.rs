@@ -221,6 +221,23 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Build a small valid package archive from text files. Use this for page tests
+/// that need the registry to extract release-specific documentation.
+pub fn tar_gz(files: &[(&str, &str)]) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for (path, content) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, *path, content.as_bytes())
+            .unwrap();
+    }
+    builder.into_inner().unwrap().finish().unwrap()
+}
+
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {

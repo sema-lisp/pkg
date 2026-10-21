@@ -1,4 +1,7 @@
-use crate::{crypto, db::Db};
+use crate::{crypto, dal, db::Db};
+use sea_orm::TransactionTrait;
+
+const MAX_RELEASE_DOCUMENT_BYTES: usize = 512 * 1024;
 
 pub fn validate_sema_version_req(requirement: Option<&str>) -> Result<Option<String>, String> {
     let Some(requirement) = requirement.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -180,64 +183,148 @@ pub struct RepoAccess<'a> {
     pub repo: &'a str,
 }
 
-/// Read `[package].sema_version_req` from `sema.toml` at one tag.
-///
-/// A tag with no readable `sema.toml` declares no requirement — tags older than the
-/// manifest are normal, and a fetch failure must not block the import. A manifest that
-/// IS readable but holds an invalid requirement is an error, so the maintainer sees it
-/// in the sync log instead of the release silently losing its constraint.
-async fn fetch_tag_sema_version_req(
+#[derive(Debug, Default)]
+struct TagMetadata {
+    sema_version_req: Option<String>,
+    dependencies: Vec<(String, String)>,
+}
+
+/// Fetch a text file from one tag without downloading the repository archive.
+/// GitHub resolves the tag at request time; we save the returned text on the
+/// new release row and never refresh it after that release exists.
+async fn fetch_tag_file(
     access: &RepoAccess<'_>,
     tag_name: &str,
+    path: &str,
 ) -> Result<Option<String>, String> {
-    let RepoAccess {
-        client,
-        token,
-        owner,
-        repo,
-    } = access;
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/sema.toml");
-    let resp = client
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/contents/{path}",
+        access.owner, access.repo
+    );
+    let response = access
+        .client
         .get(url)
-        // `.query` percent-encodes, so a tag like `release/1.0` stays one parameter.
         .query(&[("ref", tag_name)])
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {}", access.token))
         .header("User-Agent", "sema-pkg")
         .header("Accept", "application/vnd.github.raw+json")
         .send()
-        .await;
-    let Ok(resp) = resp else {
-        return Ok(None);
-    };
-    if !resp.status().is_success() {
+        .await
+        .map_err(|error| format!("Failed to fetch {path} at {tag_name}: {error}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let Ok(content) = resp.text().await else {
-        return Ok(None);
-    };
-    tag_sema_version_req(&content, tag_name)
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch {path} at {tag_name}: GitHub returned {}",
+            response.status()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RELEASE_DOCUMENT_BYTES as u64)
+    {
+        return Err(format!(
+            "{path} at {tag_name} exceeds the {} byte capture limit",
+            MAX_RELEASE_DOCUMENT_BYTES
+        ));
+    }
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Failed to read {path} at {tag_name}: {error}"))?
+    {
+        if bytes.len() + chunk.len() > MAX_RELEASE_DOCUMENT_BYTES {
+            return Err(format!(
+                "{path} at {tag_name} exceeds the {} byte capture limit",
+                MAX_RELEASE_DOCUMENT_BYTES
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| format!("{path} at {tag_name} is not UTF-8: {error}"))
 }
 
-/// Extract and validate `[package].sema_version_req` from one tag's `sema.toml`.
-///
-/// An unparsable manifest declares no requirement: `sema.toml` is not required to be
-/// valid TOML at every historic tag, and refusing the tag would block the import. A
-/// manifest that parses but holds a bad requirement is an error, so the maintainer sees
-/// it instead of the release silently losing its constraint.
-fn tag_sema_version_req(content: &str, tag_name: &str) -> Result<Option<String>, String> {
-    let Ok(document) = toml::from_str::<toml::Value>(content) else {
-        return Ok(None);
-    };
-    let Some(value) = document
+async fn fetch_tag_document(
+    access: &RepoAccess<'_>,
+    tag_name: &str,
+    paths: &[&str],
+) -> Result<Option<String>, String> {
+    // A missing filename is normal. Any other fetch failure aborts the tag
+    // import so a retry can capture the release documentation atomically.
+    for path in paths {
+        if let Some(content) = fetch_tag_file(access, tag_name, path).await? {
+            return Ok(Some(content));
+        }
+    }
+    Ok(None)
+}
+
+fn tag_metadata(
+    content: &str,
+    tag_name: &str,
+    max_dependencies: usize,
+) -> Result<TagMetadata, String> {
+    let document = toml::from_str::<toml::Value>(content)
+        .map_err(|error| format!("{tag_name}: invalid sema.toml: {error}"))?;
+    let sema_version_req = match document
         .get("package")
         .and_then(|package| package.get("sema_version_req"))
-    else {
-        return Ok(None);
+    {
+        None => None,
+        Some(value) => {
+            let requirement = value
+                .as_str()
+                .ok_or_else(|| format!("{tag_name}: sema_version_req must be a string"))?;
+            validate_sema_version_req(Some(requirement))
+                .map_err(|error| format!("{tag_name}: {error}"))?
+        }
     };
-    let requirement = value
-        .as_str()
-        .ok_or_else(|| format!("{tag_name}: sema_version_req must be a string"))?;
-    validate_sema_version_req(Some(requirement)).map_err(|error| format!("{tag_name}: {error}"))
+    let mut dependencies = Vec::new();
+    if let Some(deps) = document.get("deps").and_then(toml::Value::as_table) {
+        if deps.len() > max_dependencies {
+            return Err(format!(
+                "{tag_name}: too many dependencies (max {max_dependencies})"
+            ));
+        }
+        for (name, value) in deps {
+            if name.contains('/') {
+                return Err(format!(
+                    "{tag_name}: git dependency {name:?} cannot be represented by the registry"
+                ));
+            }
+            crate::api::packages::validate_package_name(name)
+                .map_err(|error| format!("{tag_name}: invalid dependency {name:?}: {error}"))?;
+            let version_req = value
+                .as_str()
+                .ok_or_else(|| format!("{tag_name}: dependency {name:?} must be a string"))?;
+            semver::VersionReq::parse(version_req).map_err(|error| {
+                format!(
+                    "{tag_name}: invalid version requirement {version_req:?} for {name:?}: {error}"
+                )
+            })?;
+            dependencies.push((name.clone(), version_req.to_string()));
+        }
+    }
+    Ok(TagMetadata {
+        sema_version_req,
+        dependencies,
+    })
+}
+
+async fn fetch_tag_metadata(
+    access: &RepoAccess<'_>,
+    tag_name: &str,
+    max_dependencies: usize,
+) -> Result<TagMetadata, String> {
+    let Some(content) = fetch_tag_file(access, tag_name, "sema.toml").await? else {
+        return Ok(TagMetadata::default());
+    };
+    tag_metadata(&content, tag_name, max_dependencies)
 }
 
 /// Sync a single tag: store metadata and GitHub tarball URL (no blob download).
@@ -248,6 +335,7 @@ pub async fn sync_tag(
     tag_name: &str,
     version: &semver::Version,
     package_id: i64,
+    max_dependencies: usize,
 ) -> Result<bool, String> {
     let version_str = version.to_string();
 
@@ -260,49 +348,73 @@ pub async fn sync_tag(
         return Ok(false);
     }
 
-    // Read the requirement from the manifest at this tag, not from the default branch:
-    // each release states its own, and editing the field must not rewrite past releases.
-    let sema_version_req = fetch_tag_sema_version_req(access, tag_name).await?;
+    // Read every supported metadata field at the tag, not from the default
+    // branch. Once inserted these fields are never refreshed, so an upstream
+    // edit cannot rewrite an older release page.
+    let metadata = fetch_tag_metadata(access, tag_name, max_dependencies).await?;
+    let readme_raw = fetch_tag_document(
+        access,
+        tag_name,
+        &[
+            "README.md",
+            "README.markdown",
+            "README",
+            "readme.md",
+            "readme.markdown",
+            "readme",
+        ],
+    )
+    .await?;
+    let changelog_raw = fetch_tag_document(
+        access,
+        tag_name,
+        &[
+            "CHANGELOG.md",
+            "CHANGELOG.markdown",
+            "CHANGELOG",
+            "changelog.md",
+            "changelog.markdown",
+            "changelog",
+        ],
+    )
+    .await?;
+    let docs = crate::dal::versions::ReleaseDocuments {
+        readme_html: readme_raw.as_deref().map(render_readme),
+        changelog_html: changelog_raw.as_deref().map(render_readme),
+        readme_raw,
+        changelog_raw,
+    };
 
     let (owner, repo) = (access.owner, access.repo);
     let tarball_url = format!("https://api.github.com/repos/{owner}/{repo}/tarball/{tag_name}");
 
-    crate::dal::versions::create_github_version(
-        db,
+    let txn = db
+        .begin()
+        .await
+        .map_err(|error| format!("Failed to begin version transaction: {error}"))?;
+    let release = crate::dal::versions::create_github_version(
+        &txn,
         package_id,
         &version_str,
         tarball_url,
-        sema_version_req,
+        metadata.sema_version_req,
+        docs,
     )
     .await
     .map_err(|e| format!("Failed to insert version: {e}"))?;
 
+    for (name, version_req) in metadata.dependencies {
+        dal::deps::insert(&txn, release.id, &name, &version_req)
+            .await
+            .map_err(|e| format!("Failed to insert dependency: {e}"))?;
+    }
+    txn.commit()
+        .await
+        .map_err(|error| format!("Failed to commit version transaction: {error}"))?;
+
     let _ = crate::dal::sync_log::record_ok(db, package_id, tag_name).await;
 
     Ok(true)
-}
-
-/// Fetch README content from a GitHub repository.
-pub async fn fetch_readme(
-    client: &reqwest::Client,
-    token: &str,
-    owner: &str,
-    repo: &str,
-) -> Option<String> {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/readme");
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github.raw+json")
-        .header("User-Agent", "sema-pkg")
-        .send()
-        .await
-        .ok()?;
-    if resp.status().is_success() {
-        resp.text().await.ok()
-    } else {
-        None
-    }
 }
 
 /// The syntect syntax set: syntect's defaults plus the canonical Sema grammar
@@ -584,7 +696,9 @@ mod manifest_tests {
     fn tag_manifest_reads_the_requirement_at_that_tag() {
         let content = "[package]\nname = \"policies\"\nsema_version_req = \"  >=1.34.0  \"\n";
         assert_eq!(
-            tag_sema_version_req(content, "v1.0.0").unwrap(),
+            tag_metadata(content, "v1.0.0", 64)
+                .unwrap()
+                .sema_version_req,
             Some(">=1.34.0".to_string())
         );
     }
@@ -593,29 +707,58 @@ mod manifest_tests {
     fn tag_manifest_without_a_requirement_is_absent_not_an_error() {
         // A tag older than the field, or older than sema.toml itself, must still import.
         assert_eq!(
-            tag_sema_version_req("[package]\nname = \"policies\"\n", "v0.1.0").unwrap(),
+            tag_metadata("[package]\nname = \"policies\"\n", "v0.1.0", 64)
+                .unwrap()
+                .sema_version_req,
             None
         );
-        assert_eq!(tag_sema_version_req("", "v0.1.0").unwrap(), None);
         assert_eq!(
-            tag_sema_version_req("not : valid : toml", "v0.1.0").unwrap(),
+            tag_metadata("", "v0.1.0", 64).unwrap().sema_version_req,
             None
         );
+        let error = tag_metadata("not : valid : toml", "v0.1.0", 64).unwrap_err();
+        assert!(error.starts_with("v0.1.0: invalid sema.toml:"), "{error}");
     }
 
     #[test]
     fn tag_manifest_with_a_bad_requirement_names_the_tag() {
-        let error = tag_sema_version_req(
+        let error = tag_metadata(
             "[package]\nsema_version_req = \"not a requirement\"\n",
             "v1.2.3",
+            64,
         )
         .unwrap_err();
         assert!(error.starts_with("v1.2.3: "), "{error}");
         assert!(error.contains("Invalid sema_version_req"), "{error}");
 
-        let error =
-            tag_sema_version_req("[package]\nsema_version_req = 34\n", "v1.2.3").unwrap_err();
+        let error = tag_metadata("[package]\nsema_version_req = 34\n", "v1.2.3", 64).unwrap_err();
         assert_eq!(error, "v1.2.3: sema_version_req must be a string");
+    }
+
+    #[test]
+    fn tag_manifest_preserves_supported_dependencies() {
+        let metadata = tag_metadata(
+            "[deps]\nforms = \"^1.2\"\npolicy = \">=2.0, <3.0\"\n",
+            "v1.2.3",
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.dependencies,
+            vec![
+                ("forms".to_string(), "^1.2".to_string()),
+                ("policy".to_string(), ">=2.0, <3.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_manifest_rejects_unrepresentable_or_excess_dependencies() {
+        let error = tag_metadata("[deps]\n\"org/forms\" = \"1.0\"\n", "v1.2.3", 10).unwrap_err();
+        assert!(error.contains("git dependency"), "{error}");
+
+        let error = tag_metadata("[deps]\na = \"1.0\"\nb = \"1.0\"\n", "v1.2.3", 1).unwrap_err();
+        assert_eq!(error, "v1.2.3: too many dependencies (max 1)");
     }
 
     #[test]
