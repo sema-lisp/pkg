@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ source_path }} — {{ name }} {{ version }} — Sema Pkg{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/api-docs.css?v=fd033cf3d1d9">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/api-docs.css?v=f05af7ec0e30">{% endblock %}
 {% block header_center %}{% include "partials/package_search.html" %}{% endblock %}
 {% block content %}
 <main class="page-content api-reference" data-api-docs>
@@ -14,11 +14,11 @@
       <h3>{{ source_path }}</h3>
       <div class="api-file-actions">
         <span>{{ lines.len() }} lines</span>
-        <span class="api-hash-static" title="Source SHA-256: {{ source_sha256 }}">SHA-256 <code>{{ source_sha256_short }}...</code></span>
-        <button type="button" class="api-hash-copy" data-copy-value="{{ source_sha256 }}" aria-label="Copy full source SHA-256" title="Copy full SHA-256: {{ source_sha256 }}" hidden><span>SHA-256</span> <code>{{ source_sha256_short }}...</code><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1"/><path d="M11 3V2H2v9h1"/></svg></button>
+        <span class="api-hash-static" title="Source SHA-256: {{ source_sha256 }}"><code>{{ source_sha256_short }}</code></span>
+        <button type="button" class="api-hash-copy" data-copy-value="{{ source_sha256 }}" aria-label="Copy full source SHA-256" title="Copy full SHA-256: {{ source_sha256 }}" hidden><code>{{ source_sha256_short }}</code><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5" y="5" width="9" height="9" rx="1"/><path d="M11 3V2H2v9h1"/></svg></button>
       </div>
     </div>
-    <details class="api-file-details"><summary>File details</summary><p>Source stored with {{ name }} {{ version }}. Line links refer to these exact bytes.</p><p>SHA-256 <code>{{ source_sha256 }}</code></p></details>
+    <details class="api-file-details"><summary class="disclosure-summary">{% include "partials/disclosure_icon.html" %}File details</summary><p>Source stored with {{ name }} {{ version }}. Line links refer to these exact bytes.</p><p>SHA-256 <code>{{ source_sha256 }}</code></p></details>
     <pre class="api-source-code" tabindex="0" aria-label="{{ source_path }} source code">{% for line in lines %}<span class="api-source-line" id="L{{ line.number }}"><a href="#L{{ line.number }}" aria-label="Line {{ line.number }}">{{ line.number }}</a><code>{{ line.html|safe }}</code></span>{% endfor %}</pre>
   </section>
 </div>

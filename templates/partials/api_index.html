@@ -1,6 +1,6 @@
 <aside class="api-index" aria-label="API index">
   <details class="api-index-disclosure" open>
-  <summary>Browse exports <span>{{ index_entries.len() }}</span></summary>
+  <summary class="disclosure-summary">{% include "partials/disclosure_icon.html" %}Browse exports <span>{{ index_entries.len() }}</span></summary>
   <div class="api-filter" hidden>
     <input id="api-search" type="search" aria-label="Find an export" placeholder="Find an export..." autocomplete="off" spellcheck="false" aria-controls="api-export-index">
     <span id="api-results" role="status" aria-live="polite"></span>

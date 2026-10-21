@@ -3,7 +3,7 @@
 {% block description %}API declarations for {{ name }} {{ version }}.{% endblock %}
 {% block seo_urls %}<link rel="canonical" href="{{ base_url }}/packages/{{ name }}/{{ version }}/api">{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/api-docs.css?v=fd033cf3d1d9">
+<link rel="stylesheet" href="/static/api-docs.css?v=f05af7ec0e30">
 <link rel="alternate" type="text/markdown" href="/packages/{{ name }}/{{ version }}/api.md">
 {% endblock %}
 {% block header_center %}{% include "partials/package_search.html" %}{% endblock %}
@@ -31,13 +31,13 @@
         {% endif %}
         {% if let Some(docstring) = item.entry.docstring %}<div class="api-docstring">{{ docstring }}</div>{% else %}{% if item.entry.parameters.is_some() %}<p class="api-undocumented">No docstring in this release. See the source definition below.</p>{% endif %}{% endif %}
         {% if let Some(reason) = item.entry.unresolved_reason %}<p class="api-undocumented">{{ reason }}</p>{% endif %}
-        {% if !item.definition_html.is_empty() %}<details class="api-definition"><summary>View source definition</summary><pre tabindex="0" aria-label="Source definition for {{ item.entry.name }}"><code>{{ item.definition_html|safe }}</code></pre></details>{% endif %}
+        {% if !item.definition_html.is_empty() %}<details class="api-definition"><summary class="disclosure-summary">{% include "partials/disclosure_icon.html" %}View source definition</summary><pre tabindex="0" aria-label="Source definition for {{ item.entry.name }}"><code>{{ item.definition_html|safe }}</code></pre></details>{% endif %}
       </article>
       {% endfor %}
     </div>
   </div>
   {% endif %}
-  {% if !parser_version.is_empty() %}<details class="api-provenance"><summary>About this reference</summary><p>Generated with {{ parser_version }} without executing package code. These are source declarations; dynamic exports, aliases, and runtime changes are not inferred.</p><p>Archive SHA-256 <code>{{ archive_sha256 }}</code></p></details>{% endif %}
+  {% if !parser_version.is_empty() %}<details class="api-provenance"><summary class="disclosure-summary">{% include "partials/disclosure_icon.html" %}About this reference</summary><p>Generated with {{ parser_version }} without executing package code. These are source declarations; dynamic exports, aliases, and runtime changes are not inferred.</p><p>Archive SHA-256 <code>{{ archive_sha256 }}</code></p></details>{% endif %}
   <span class="api-copy-status" role="status" aria-live="polite"></span>
 </main>
 {% endblock %}

@@ -52,8 +52,16 @@ responses have no HTML layout width.
 - Format actions are `Markdown` and `Print`. The Print link's title explains
   that the standalone page can also be saved offline.
 - Source metadata sits beside the filename. The 12-character SHA-256 prefix is
-  a display abbreviation only; clicking copies all 64 characters. File details
+  shown without a label or ellipsis, beside a copy icon. Clicking copies all 64
+  characters. The tooltip and accessible name identify SHA-256; File details
   exposes the full value even without JavaScript or clipboard access.
+- All four disclosure controls use the main website's rounded SVG chevron
+  (`CustomPageLayout.vue`), with right/down orientation for closed/open states.
+  They retain native details/summary keyboard and no-JavaScript behavior.
+- README code blocks and tables, API excerpts, source, and the export index use
+  thin scrollbars with the registry's muted text and dark code colors. Older
+  WebKit gets a 6px fallback. README blocks are ordinary HTML inside the tab
+  panel, so this styling does not require a UI package change.
 
 The checksum control follows Primer's [truncation](https://primer.style/product/components/truncate/)
 and [copy](https://primer.style/product/getting-started/rails/components/clipboard_copy/)

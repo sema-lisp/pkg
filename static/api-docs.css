@@ -11,7 +11,7 @@
 .api-layout { display: grid; grid-template-columns: 14.5rem minmax(0, 1fr); gap: 1.5rem; padding-block-start: 1.5rem; }
 .api-index { align-self: start; position: sticky; inset-block-start: 1.5rem; max-block-size: calc(100dvh - 3rem); overflow-y: auto; padding-inline-end: 1rem; padding-block-end: 0.5rem; border-inline-end: 1px solid var(--border); }
 .api-index-disclosure > summary { display: none; font-size: 0.8rem; color: var(--text-bright); cursor: pointer; padding-block: 0.75rem; }
-.api-index-disclosure > summary span { color: var(--text); margin-inline-start: 0.5rem; }
+.api-index-disclosure > summary span { color: var(--text); }
 .api-filter { margin-block-end: 0.75rem; }
 .api-filter input { width: 100%; min-width: 0; border: 1px solid var(--border-focus); border-radius: 4px; background: var(--bg-raised); color: var(--text-bright); font: 0.75rem var(--mono); padding: 0.5rem 0.65rem; caret-color: var(--gold); }
 .api-filter input::placeholder { color: var(--text); }
@@ -61,7 +61,6 @@
 .api-file-details p { margin-block-start: 0.5rem; }
 .api-copy-status, #api-results { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .api-source-code { overflow-x: auto; padding-block: 0.75rem; border-block: 1px solid var(--border); background: var(--bg-code); font: 0.78rem/1.75 var(--mono); tab-size: 2; }
-.api-index, .api-definition pre, .api-source-code { scrollbar-color: var(--border-focus) var(--bg-code); scrollbar-width: thin; }
 .api-source-line { display: flex; min-width: max-content; scroll-margin-block-start: 1rem; }
 .api-source-line > a { color: var(--text); flex: 0 0 3.25rem; text-align: right; padding-inline: 0.4rem 0.8rem; user-select: none; }
 .api-source-line:target { background: var(--gold-glow); }
@@ -71,7 +70,7 @@
   .api-layout { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
   .api-index { position: static; max-block-size: none; border-inline-end: 0; border-block-end: 1px solid var(--border); padding-inline-end: 0; }
   .api-index ul { max-block-size: 15rem; overflow-y: auto; }
-  .api-index-disclosure > summary { display: list-item; }
+  .api-index-disclosure > summary { display: flex; }
   .api-index-disclosure[open] > summary { margin-block-end: 0.75rem; }
   .api-index li a { min-block-size: 2.75rem; }
   .api-entry-heading { flex-wrap: wrap; }

@@ -59,11 +59,11 @@ test('published API reference, source, Markdown, offline print, and mobile layou
   const hashCopy = page.getByRole('button', { name: 'Copy full source SHA-256' });
   const digest = await hashCopy.getAttribute('data-copy-value');
   expect(digest).toMatch(/^[a-f0-9]{64}$/);
-  await expect(hashCopy.locator('code')).toHaveText(`${digest!.slice(0, 12)}...`);
+  await expect(hashCopy.locator('code')).toHaveText(digest!.slice(0, 12));
   await hashCopy.click();
   await expect(page.locator('.api-copy-status')).toHaveText('Full source SHA-256 copied.');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(digest);
-  await expect(hashCopy).toContainText('SHA-256');
+  await expect(hashCopy.locator('code')).toHaveText(digest!.slice(0, 12));
   await page.screenshot({ path: '../.impeccable/review/refined-source-desktop.png' });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
