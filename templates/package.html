@@ -6,8 +6,13 @@
 {% block twitter_title %}{{ name }} — Sema Pkg{% endblock %}
 {% block twitter_description %}{{ description }}{% endblock %}
 {% block seo_urls %}
+{% if let Some(v) = selected_version %}
+<link rel="canonical" href="{{ base_url }}/packages/{{ name }}/{{ v.version }}">
+<meta property="og:url" content="{{ base_url }}/packages/{{ name }}/{{ v.version }}">
+{% else %}
 <link rel="canonical" href="{{ base_url }}/packages/{{ name }}">
 <meta property="og:url" content="{{ base_url }}/packages/{{ name }}">
+{% endif %}
 {% endblock %}
 {% block head %}
 {% if let Some(jsonld) = jsonld %}
@@ -23,6 +28,8 @@
 
   .detail-sidebar section {
     margin-bottom: 1.5rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .detail-sidebar .section-label {
@@ -64,6 +71,7 @@
 
   .dep-table {
     width: 100%;
+    overflow-wrap: anywhere;
     border-collapse: collapse;
     font-size: 0.78rem;
   }
@@ -114,17 +122,20 @@
     .detail-grid {
       grid-template-columns: 1fr;
     }
+    .detail-grid > * {
+      min-width: 0;
+    }
     .detail-sidebar {
       order: -1;
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 1rem;
     }
   }
 </style>
 {% endblock %}
 {% block header_center %}
-<form action="/search" method="get" class="search-bar" style="max-width:22rem;">
+<form action="/search" method="get" class="search-bar package-search">
   <input type="text" name="q" class="search-input" aria-label="Search packages" placeholder="Search packages…" data-testid="header-search">
   <button type="submit" class="search-btn">Search</button>
 </form>
@@ -134,7 +145,7 @@
   <div style="margin-bottom:1.5rem;">
     <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
       <h1 style="font-size:1.3rem; color:var(--gold); font-weight:500;" data-testid="pkg-name">{{ name }}</h1>
-      {% if let Some(v) = versions.first() %}
+      {% if let Some(v) = selected_version %}
       <span class="badge badge-gold">{{ v.version }}</span>
       {% endif %}
       {% if source == "github" %}
@@ -142,17 +153,27 @@
       {% endif %}
     </div>
     <p style="font-size:0.82rem; color:var(--text); margin-top:0.35rem;">{{ description }}</p>
+    {% if let Some(notice) = release_notice %}
+    <p style="font-size:0.72rem; color:var(--text-dim); margin-top:0.6rem;">{{ notice }}</p>
+    {% endif %}
     <div style="margin-top:0.75rem;">
+      {% if installable %}
+      {% if let Some(v) = selected_version %}
       <div class="install-snippet" style="display:inline-flex;" data-testid="install-cmd">
-        <span class="prompt">$</span> sema pkg install {{ name }}
+        <span class="prompt">$</span> sema pkg add {{ name }}@{{ v.version }}
       </div>
+      {% endif %}
+      {% else %}
+      <div class="empty-state" data-testid="not-installable">No installable release</div>
+      {% endif %}
     </div>
   </div>
 
   <div class="detail-grid">
     <sema-tabs hash-sync value="readme">
       <sema-tab value="readme" data-testid="tab-readme">Readme</sema-tab>
-      <sema-tab value="versions" data-testid="tab-versions">Versions <span style="font-size:0.6rem; color:var(--text-dim);">{{ versions.len() }}</span></sema-tab>
+      <sema-tab value="changelog" data-testid="tab-changelog">Changelog</sema-tab>
+      <sema-tab value="versions" data-testid="tab-versions">Versions <span style="font-size:0.6rem; color:var(--text-dim);">{{ version_count }}</span></sema-tab>
       <sema-tab value="deps" data-testid="tab-deps">Dependencies <span style="font-size:0.6rem; color:var(--text-dim);">{{ deps.len() }}</span></sema-tab>
 
       <sema-tab-panel value="readme">
@@ -163,19 +184,38 @@
         {% endif %}
       </sema-tab-panel>
 
+      <sema-tab-panel value="changelog">
+        {% if let Some(html) = changelog_html %}
+        <div class="readme">{{ html|safe }}</div>
+        {% else %}
+        <div class="empty-state">No changelog available for this release</div>
+        {% endif %}
+      </sema-tab-panel>
+
       <sema-tab-panel value="versions" data-testid="versions-table">
         <table class="dep-table">
           <thead><tr><th>Version</th><th>Size</th><th>Published</th></tr></thead>
           <tbody>
             {% for v in versions %}
             <tr>
-              <td><a href="/packages/{{ name }}">{{ v.version }}{% if v.yanked %} <span class="tag" style="color:var(--error);">yanked</span>{% endif %}</a></td>
+              <td><a href="/packages/{{ name }}/{{ v.version }}">{{ v.version }}{% if v.yanked %} <span class="tag" style="color:var(--error);">yanked</span>{% endif %}</a></td>
               <td style="font-size:0.72rem; color:var(--text-dim);">{{ v.size_bytes / 1024 }} KB</td>
               <td style="font-size:0.72rem; color:var(--text-dim);">{{ v.published_at }}</td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        {% if versions_pages > 1 %}
+        <nav aria-label="Version pages" style="display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:0.5rem; margin-top:1rem;">
+          {% if versions_page > 1 %}
+          <a href="?versions_page={{ versions_page - 1 }}#versions" class="btn btn-ghost">Previous</a>
+          {% endif %}
+          <span style="font-size:0.72rem; color:var(--text-dim);">Page {{ versions_page }} of {{ versions_pages }}</span>
+          {% if versions_page < versions_pages %}
+          <a href="?versions_page={{ versions_page + 1 }}#versions" class="btn btn-ghost">Next</a>
+          {% endif %}
+        </nav>
+        {% endif %}
       </sema-tab-panel>
 
       <sema-tab-panel value="deps">
@@ -252,7 +292,7 @@
       </section>
       {% endif %}
 
-      {% if let Some(v) = versions.first() %}
+      {% if let Some(v) = selected_version %}
       {% if let Some(req) = v.sema_version_req %}
       <section>
         <div class="section-label">Sema Version</div>
@@ -275,13 +315,14 @@
       <section>
         <div class="section-label">Versions</div>
         <table class="data-table" style="font-size:0.72rem;">
-          {% for v in versions %}
+          {% for v in versions.iter().take(5) %}
           <tr>
-            <td{% if loop.first %} style="color:var(--gold);"{% endif %}>{{ v.version }}</td>
+            <td{% if let Some(selected) = selected_version %}{% if selected.version == v.version %} style="color:var(--gold);"{% endif %}{% endif %}>{{ v.version }}</td>
             <td style="color:var(--text-dim);">{{ v.published_at }}</td>
           </tr>
           {% endfor %}
         </table>
+        <a href="#versions" class="sidebar-link">View all {{ version_count }} versions</a>
       </section>
 
       {% if username.is_some() %}

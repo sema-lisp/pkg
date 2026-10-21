@@ -840,6 +840,259 @@ async fn test_web_package_not_found() {
 }
 
 #[tokio::test]
+async fn test_release_page_uses_semver_default_and_release_specific_metadata() {
+    let (app, _state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "releasepub", "releasepub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "release-token").await;
+
+    let newest = serde_json::json!({
+        "description": "versioned package",
+        "sema_version_req": ">=1.34.0",
+        "dependencies": [{"name": "new-dependency", "version_req": "^2.0"}],
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "release-page-pkg",
+        "2.0.0",
+        &tar_gz(&[
+            ("README.md", "# Release two\n\nThe current API."),
+            ("CHANGELOG.md", "# 2.0.0\n\nBreaking change."),
+        ]),
+        &newest.to_string(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let backport = serde_json::json!({
+        "description": "versioned package",
+        "dependencies": [{"name": "old-dependency", "version_req": "^1.0"}],
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "release-page-pkg",
+        "1.5.0",
+        &tar_gz(&[("README.md", "# Release one\n\nThe old API.")]),
+        &backport.to_string(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/release-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("Release two"));
+    assert!(html.contains("Breaking change"));
+    assert!(html.contains("sema pkg add release-page-pkg@2.0.0"));
+    assert!(html.contains("new-dependency"));
+    assert!(!html.contains("old-dependency"));
+    assert!(html.contains("/packages/release-page-pkg/1.5.0"));
+
+    let api = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/release-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api.status(), StatusCode::OK);
+    let api = body_json(api).await;
+    assert!(api["package"]["readme_html"]
+        .as_str()
+        .is_some_and(|readme| readme.contains("Release two")));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/release-page-pkg/1.5.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("Release one"));
+    assert!(!html.contains("Release two"));
+    assert!(html.contains("old-dependency"));
+    assert!(!html.contains("new-dependency"));
+    assert!(html.contains("No changelog available for this release"));
+}
+
+#[tokio::test]
+async fn test_release_page_marks_all_yanked_releases_not_installable() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "yankedpub", "yankedpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "yanked-token").await;
+    for version in ["1.0.0", "2.0.0"] {
+        let res = publish_package(
+            app.clone(),
+            &token,
+            "all-yanked-page-pkg",
+            version,
+            b"release",
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+    let package = package::Entity::find()
+        .filter(package::Column::Name.eq("all-yanked-page-pkg"))
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    package_version::Entity::update_many()
+        .col_expr(
+            package_version::Column::Yanked,
+            sea_orm::sea_query::Expr::value(1i32),
+        )
+        .filter(package_version::Column::PackageId.eq(package.id))
+        .exec(&state.db)
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/all-yanked-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("All published releases are yanked"));
+    assert!(html.contains("No installable release"));
+    assert!(!html.contains("sema pkg add all-yanked-page-pkg@"));
+}
+
+#[tokio::test]
+async fn test_recent_feed_announces_a_new_backport_at_its_release_url() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "feedpub", "feedpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "feed-token").await;
+    for version in ["2.0.0", "1.5.0"] {
+        let res =
+            publish_package(app.clone(), &token, "release-feed-pkg", version, b"release").await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/feed/recent.xml")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let xml = body_string(response).await;
+    assert!(xml.contains("release-feed-pkg 1.5.0"));
+    assert!(xml.contains("/packages/release-feed-pkg/1.5.0"));
+    assert!(xml.contains("urn:sema-pkg:release-feed-pkg:1.5.0"));
+}
+
+#[tokio::test]
+async fn test_publish_stores_a_release_readme_larger_than_mysql_text() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "largepub", "largepub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "large-token").await;
+    let readme = format!("# Large release\n\n{}", "x".repeat(70 * 1024));
+    let response = publish_package_full(
+        app.clone(),
+        &token,
+        "large-release-doc-pkg",
+        "1.0.0",
+        &tar_gz(&[("README.md", readme.as_str())]),
+        r#"{"description":"large release docs"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/large-release-doc-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let package = body_json(response).await;
+    assert!(package["package"]["readme_html"]
+        .as_str()
+        .is_some_and(|html| html.len() > 65_535));
+}
+
+#[tokio::test]
+async fn test_release_page_is_honest_about_legacy_documentation_and_missing_versions() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let package = package::ActiveModel {
+        name: Set("legacy-page-pkg".into()),
+        description: Set("legacy package".into()),
+        readme_html: Set(Some("<p>Current package README</p>".into())),
+        created_at: Set(sema_pkg::dal::time::now()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+    package_version::ActiveModel {
+        package_id: Set(package.id),
+        version: Set("1.0.0".into()),
+        checksum_sha256: Set(String::new()),
+        blob_key: Set(String::new()),
+        size_bytes: Set(0),
+        published_at: Set(sema_pkg::dal::time::now()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/legacy-page-pkg/1.0.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("No README available"));
+    assert!(!html.contains("Current package README"));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/legacy-page-pkg/9.9.9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn test_healthz() {
     let (app, _dir) = test_app().await;
 
@@ -3116,4 +3369,82 @@ async fn test_429_has_actionable_retry_after() {
         }
     }
     assert!(saw_429, "expected a 429 to inspect");
+}
+
+#[tokio::test]
+async fn test_release_history_pagination_keeps_selected_release_and_bounds_rows() {
+    use sea_orm::{ActiveModelTrait, Set};
+    use sema_pkg::entity::{package, package_version};
+
+    let (app, state, _dir) = test_app_with_state().await;
+    let pkg = package::ActiveModel {
+        name: Set("paged-history".into()),
+        description: Set("Release pagination fixture".into()),
+        created_at: Set("2026-10-21 00:00:00".into()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+    for minor in 0..123 {
+        package_version::ActiveModel {
+            package_id: Set(pkg.id),
+            version: Set(format!("1.{minor}.0")),
+            checksum_sha256: Set("test".into()),
+            blob_key: Set("test".into()),
+            size_bytes: Set(1),
+            published_at: Set("2026-10-21 00:00:00".into()),
+            readme_html: Set(Some(format!("<p>Documentation for release {minor}</p>"))),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+    }
+    for (query, page, rows, first) in [
+        ("", 1, 50, 122),
+        ("?versions_page=0", 1, 50, 122),
+        ("?versions_page=2", 2, 50, 72),
+        ("?versions_page=3", 3, 23, 22),
+        ("?versions_page=18446744073709551615", 3, 23, 22),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/paged-history/1.7.0{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        let table = html
+            .split("data-testid=\"versions-table\"")
+            .nth(1)
+            .unwrap()
+            .split("</sema-tab-panel>")
+            .next()
+            .unwrap();
+        assert_eq!(table.matches("<tr>").count(), rows + 1);
+        assert!(table.contains(&format!("Page {page} of 3")));
+        assert!(table.contains(&format!("/packages/paged-history/1.{first}.0")));
+        assert!(html.contains("sema pkg add paged-history@1.7.0"));
+        assert!(html.contains("Documentation for release 7"));
+        assert!(html.contains("View all 123 versions"));
+        assert_eq!(html.matches("<tr>").count(), rows + 6);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/paged-history?versions_page=3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(response).await;
+    assert!(html.contains("sema pkg add paged-history@1.122.0"));
+    assert!(html.contains("Documentation for release 122"));
 }

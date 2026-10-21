@@ -192,6 +192,20 @@ pub async fn publish(
         }
     }
 
+    let extracted_docs = crate::tarball::extract_release_docs(&tarball);
+    let docs = dal::versions::ReleaseDocuments {
+        readme_html: extracted_docs
+            .readme
+            .as_deref()
+            .map(crate::github_sync::render_readme),
+        changelog_html: extracted_docs
+            .changelog
+            .as_deref()
+            .map(crate::github_sync::render_readme),
+        readme_raw: extracted_docs.readme,
+        changelog_raw: extracted_docs.changelog,
+    };
+
     // Store blob before the transaction: content-addressed, so a failure below
     // leaves at worst one orphaned file that a retried publish reuses.
     let (blob_key, checksum, size) = state
@@ -237,6 +251,7 @@ pub async fn publish(
         blob_key,
         size as i64,
         metadata.sema_version_req.clone(),
+        docs,
     )
     .await
     .map_err(|e| ApiError::internal(format!("Failed to insert version: {e:?}")))?;
@@ -259,16 +274,6 @@ pub async fn publish(
     txn.commit()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit transaction: {e:?}")))?;
-
-    // Best-effort: surface the tarball's README on the package page. Non-fatal —
-    // a package without a README (or with a non-decodable tarball) just shows
-    // none. Reflects the just-published version.
-    if let Some(md) = crate::tarball::extract_readme(&tarball) {
-        let html = crate::github_sync::render_readme(&md);
-        if let Err(e) = dal::packages::set_readme(&state.db, package_id, &md, &html).await {
-            tracing::warn!("failed to store README for {name}: {e:?}");
-        }
-    }
 
     crate::audit::log(
         &state.db,
@@ -307,9 +312,8 @@ pub async fn get_package(
 
     let pkg_id = pkg.id;
 
-    let versions = dal::versions::list_for_package(&state.db, pkg_id)
-        .await
-        .unwrap_or_default();
+    let mut versions = dal::versions::list_candidates_for_package(&state.db, pkg_id).await;
+    dal::versions::sort_candidates_for_display(&mut versions);
 
     let version_list: Vec<serde_json::Value> = versions
         .iter()
@@ -326,6 +330,15 @@ pub async fn get_package(
         })
         .collect();
 
+    let readme_html = match dal::versions::default_release_candidate(&versions) {
+        Some(release) => dal::versions::find_by_id(&state.db, release.version.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|release| release.readme_html),
+        None => None,
+    };
+
     let owners = dal::owners::list_usernames(&state.db, pkg_id)
         .await
         .unwrap_or_default();
@@ -338,7 +351,7 @@ pub async fn get_package(
             "description": pkg.description,
             "repository_url": pkg.repository_url,
             "created_at": pkg.created_at,
-            "readme_html": pkg.readme_html,
+            "readme_html": readme_html,
         },
         "versions": version_list,
         "owners": owners,

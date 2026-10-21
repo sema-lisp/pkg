@@ -175,11 +175,12 @@ pub async fn id_chunk<C: ConnectionTrait>(db: &C, lo: i64, hi: i64) -> Vec<(i64,
 }
 
 /// A package summary row for server-rendered listings:
-/// `(name, description, latest_version, published_at)`.
-pub type ListingRow = (String, String, String, String);
+/// `(package_id, name, description, latest_version, published_at)`.
+pub type ListingRow = (i64, String, String, String, String);
 
 fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
     (
+        crate::db::row_get_i64(r, "id").unwrap_or_default(),
         r.try_get("", "name").unwrap_or_default(),
         r.try_get("", "description").unwrap_or_default(),
         r.try_get("", "latest_version").unwrap_or_default(),
@@ -187,8 +188,44 @@ fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
     )
 }
 
-/// The most recently published packages, newest first, each paired with its
-/// latest version. `limit` bounds the result. Used by the homepage.
+/// Replace an insertion-order version label with the release the package page
+/// selects. Keeping list badges and `/packages/{name}` aligned avoids showing a
+/// backport as "latest" merely because it was published most recently.
+async fn with_default_releases<C: ConnectionTrait>(
+    db: &C,
+    rows: Vec<ListingRow>,
+) -> Vec<ListingRow> {
+    let package_ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+    let mut versions =
+        std::collections::HashMap::<i64, Vec<crate::dal::versions::ReleaseCandidate>>::new();
+    for version in crate::dal::versions::list_candidates_for_packages(db, &package_ids).await {
+        versions
+            .entry(version.package_id)
+            .or_default()
+            .push(version);
+    }
+    rows.into_iter()
+        .map(|row| {
+            let selected = versions
+                .get(&row.0)
+                .and_then(|versions| crate::dal::versions::default_release_candidate(versions));
+            match selected {
+                Some(release) => (
+                    row.0,
+                    row.1,
+                    row.2,
+                    release.version.version,
+                    release.version.published_at,
+                ),
+                None => row,
+            }
+        })
+        .collect()
+}
+
+/// The most recently published releases, newest first. `limit` bounds the
+/// result. Used by the release feed, whose entries must retain the release
+/// that was actually published at this time.
 ///
 /// Walks `package_versions` newest-first via `idx_versions_published` and keeps
 /// the first (latest) row per package — the first occurrence in descending
@@ -196,12 +233,12 @@ fn listing_row(r: &sea_orm::QueryResult) -> ListingRow {
 /// window and de-duplicating in Rust avoids the per-package correlated `MAX`
 /// subquery, whose plan degrades badly on Postgres/MySQL (a full scan with the
 /// subquery run once per package).
-pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
+pub async fn recent_releases<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
     // Enough recent rows to yield `limit` distinct packages even when a few
     // publish many versions in the window; a bounded index scan stays cheap.
     let scan = (limit * 30).max(300);
     let sql = format!(
-        r#"SELECT p.name, p.description, pv.version AS latest_version, pv.published_at
+        r#"SELECT p.id, p.name, p.description, pv.version AS latest_version, pv.published_at
            FROM package_versions pv
            JOIN packages p ON p.id = pv.package_id
            ORDER BY pv.published_at DESC, pv.id DESC
@@ -221,7 +258,7 @@ pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
     let mut out = Vec::with_capacity(limit as usize);
     for r in &rows {
         let row = listing_row(r);
-        if seen.insert(row.0.clone()) {
+        if seen.insert(row.0) {
             out.push(row);
             if out.len() >= limit as usize {
                 break;
@@ -229,6 +266,13 @@ pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
         }
     }
     out
+}
+
+/// Recent packages for listing pages, with the default release used as their
+/// version badge. The release feed uses [`recent_releases`] instead so a newly
+/// published backport remains a new feed item.
+pub async fn recent<C: ConnectionTrait>(db: &C, limit: i64) -> Vec<ListingRow> {
+    with_default_releases(db, recent_releases(db, limit).await).await
 }
 
 /// Search packages by name/description for the server-rendered search page,
@@ -245,7 +289,7 @@ pub async fn search_page<C: ConnectionTrait>(
     let backend = db.get_database_backend();
     let (join, where_sql, binds) = search_predicate(backend, q);
     let sql = format!(
-        r#"SELECT p.name, p.description,
+        r#"SELECT p.id, p.name, p.description,
            COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
            COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
            FROM packages p {join}
@@ -258,18 +302,19 @@ pub async fn search_page<C: ConnectionTrait>(
         .unwrap_or_default();
     let mut hits: Vec<ListingRow> = rows.iter().map(listing_row).collect();
     // Guarantee the exact match is ranked even if it fell outside the window.
-    if !q.trim().is_empty() && !hits.iter().any(|h| h.0.eq_ignore_ascii_case(q)) {
+    if !q.trim().is_empty() && !hits.iter().any(|h| h.1.eq_ignore_ascii_case(q)) {
         if let Some(row) = one_listing(db, q).await {
             hits.push(row);
         }
     }
-    rank_page(hits, |h| &h.0, q, limit, offset)
+    let page = rank_page(hits, |h| &h.1, q, limit, offset);
+    with_default_releases(db, page).await
 }
 
 /// A single package's listing row (name, description, latest version, publish
 /// time), or `None` if the package does not exist.
 async fn one_listing<C: ConnectionTrait>(db: &C, name: &str) -> Option<ListingRow> {
-    let sql = r#"SELECT p.name, p.description,
+    let sql = r#"SELECT p.id, p.name, p.description,
            COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
            COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
            FROM packages p WHERE p.name = ? LIMIT 1"#;
@@ -290,7 +335,7 @@ pub async fn list_for_owner<C: ConnectionTrait>(db: &C, user_id: i64) -> Vec<Lis
     let rows = db
         .query_all(crate::db::stmt(
             db.get_database_backend(),
-            r#"SELECT p.name, p.description,
+            r#"SELECT p.id, p.name, p.description,
                COALESCE((SELECT pv.version FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), '') as latest_version,
                COALESCE((SELECT pv.published_at FROM package_versions pv WHERE pv.package_id = p.id ORDER BY pv.id DESC LIMIT 1), p.created_at) as published_at
                FROM packages p
@@ -301,7 +346,7 @@ pub async fn list_for_owner<C: ConnectionTrait>(db: &C, user_id: i64) -> Vec<Lis
         ))
         .await
         .unwrap_or_default();
-    rows.iter().map(listing_row).collect()
+    with_default_releases(db, rows.iter().map(listing_row).collect()).await
 }
 
 /// Find a GitHub-linked package by its `owner/repo` full name (only rows with
@@ -381,23 +426,6 @@ pub async fn create_github<C: ConnectionTrait>(
         ..Default::default()
     };
     row.insert(db).await
-}
-
-/// Store the raw + rendered README for a package. A no-op if the package no
-/// longer exists.
-pub async fn set_readme<C: ConnectionTrait>(
-    db: &C,
-    package_id: i64,
-    readme_raw: &str,
-    readme_html: &str,
-) -> Result<(), DbErr> {
-    package::Entity::update_many()
-        .col_expr(package::Column::ReadmeRaw, Expr::value(readme_raw))
-        .col_expr(package::Column::ReadmeHtml, Expr::value(readme_html))
-        .filter(package::Column::Id.eq(package_id))
-        .exec(db)
-        .await
-        .map(|_| ())
 }
 
 /// Overwrite a package's description.

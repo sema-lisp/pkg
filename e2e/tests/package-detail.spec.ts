@@ -117,3 +117,35 @@ test.describe('Package detail — report form', () => {
     ).toHaveAttribute('maxlength', '2000');
   });
 });
+
+test('large release histories stay paginated on desktop and mobile', async ({ authedPage, request, apiToken }) => {
+  const { execFileSync } = await import('node:child_process');
+  const path = await import('node:path');
+  const name = `detail-pages-${Date.now()}`;
+  await publishPackage(request, apiToken, name, '2.0.0');
+  const db = path.resolve(__dirname, '..', 'e2e-test.db');
+  execFileSync('sqlite3', [db, `
+    WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<122)
+    INSERT INTO package_versions (package_id, version, checksum_sha256, blob_key, size_bytes, published_at)
+    SELECT (SELECT id FROM packages WHERE name='${name}'), '1.'||i||'.0', 'test', 'test', 1, '2026-10-21 00:00:00' FROM n;
+  `]);
+  for (const width of [1440, 390]) {
+    await authedPage.setViewportSize({ width, height: 900 });
+    await authedPage.goto(`/packages/${name}/1.7.0#versions`);
+    await expect(authedPage.getByTestId('versions-table')).toBeVisible();
+    await expect(authedPage.getByTestId('versions-table').locator('tbody tr')).toHaveCount(50);
+    await expect(authedPage.getByTestId('tab-versions')).toContainText('123');
+    await expect(authedPage.locator('.detail-sidebar .data-table tr')).toHaveCount(5);
+    const pages = authedPage.getByRole('navigation', { name: 'Version pages' });
+    await pages.getByRole('link', { name: 'Next', exact: true }).click();
+    await expect(authedPage).toHaveURL(new RegExp(`/1\\.7\\.0\\?versions_page=2#versions$`));
+    await expect(pages).toContainText('Page 2 of 3');
+    await expect(authedPage.getByTestId('install-cmd')).toContainText(`${name}@1.7.0`);
+    await pages.getByRole('link', { name: 'Next', exact: true }).click();
+    await expect(authedPage.getByTestId('versions-table').locator('tbody tr')).toHaveCount(23);
+    await expect(pages.getByRole('link', { name: 'Next', exact: true })).toHaveCount(0);
+    await pages.getByRole('link', { name: 'Previous' }).click();
+    await expect(pages).toContainText('Page 2 of 3');
+    expect(await authedPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+});

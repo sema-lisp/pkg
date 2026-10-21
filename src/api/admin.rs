@@ -329,9 +329,8 @@ pub async fn get_package(
 
     let pkg_id = pkg.id;
 
-    let versions = crate::dal::versions::list_for_package(&state.db, pkg_id)
-        .await
-        .unwrap_or_default();
+    let mut versions = crate::dal::versions::list_candidates_for_package(&state.db, pkg_id).await;
+    crate::dal::versions::sort_candidates_for_display(&mut versions);
 
     let version_list: Vec<serde_json::Value> = versions
         .iter()

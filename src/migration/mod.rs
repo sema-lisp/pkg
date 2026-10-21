@@ -20,6 +20,7 @@ mod m007_perf_indexes;
 // Public so the dev seeder can drop/rebuild the FTS index around a bulk load.
 pub mod m008_search;
 mod m009_download_sum_index;
+mod m010_release_metadata;
 
 pub struct Migrator;
 
@@ -36,6 +37,7 @@ impl MigratorTrait for Migrator {
             Box::new(m007_perf_indexes::Migration),
             Box::new(m008_search::Migration),
             Box::new(m009_download_sum_index::Migration),
+            Box::new(m010_release_metadata::Migration),
         ]
     }
 }
