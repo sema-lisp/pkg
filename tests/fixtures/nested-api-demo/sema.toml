@@ -1,0 +1,6 @@
+[package]
+name = "nested-api-demo"
+version = "0.1.0"
+description = "Local preview fixture with nested source, an imported alias, and a test suite"
+entrypoint = "src/api.sema"
+license = "MIT"

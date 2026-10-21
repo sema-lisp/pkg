@@ -8,6 +8,274 @@ use tower::ServiceExt;
 mod common;
 use common::*;
 
+// ── Package API Documentation ──
+
+#[tokio::test]
+async fn api_reference_formats_use_the_same_stored_release() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "apidocpub", "apidocpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "api-docs").await;
+    let response = publish_package_full(
+        app.clone(),
+        &token,
+        "sema-retry",
+        "0.1.0",
+        include_bytes!("fixtures/sema-retry-0.1.0.tar.gz"),
+        r#"{"description":"Retry with exponential backoff"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let package = sema_pkg::dal::packages::find_by_name(&state.db, "sema-retry")
+        .await
+        .unwrap()
+        .unwrap();
+    let version = sema_pkg::dal::versions::list_candidates_for_package(&state.db, package.id)
+        .await
+        .remove(0);
+    let document = sema_pkg::dal::api_docs::find(&state.db, version.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.entries.len(), 9);
+    for (suffix, content_type) in [
+        ("api", "text/html"),
+        ("api/print", "text/html"),
+        ("api.md", "text/markdown"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/sema-retry/0.1.0/{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with(content_type));
+        let body = body_string(response).await;
+        for entry in &document.entries {
+            assert!(body.contains(&entry.name), "{suffix}: {}", entry.name);
+        }
+        if suffix == "api" {
+            assert!(body.contains("<var>thunk</var>"));
+            assert!(body.contains("site-header"));
+            assert!(body.contains("Breadcrumb"));
+            assert!(body.contains("color:#"));
+        } else if suffix == "api/print" {
+            assert!(!body.contains("<script"));
+            assert!(!body.contains("<link"));
+            assert!(!body.contains("<img"));
+            assert!(body.contains("<style>"));
+        } else {
+            assert!(body.contains("```sema\n(retry/with-retry thunk . opts)"));
+        }
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/sema-retry/0.1.0/source/package.sema")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(html.contains("id=\"L73\""));
+    assert!(html.contains("color:#"));
+    for path in [
+        "/packages/sema-retry/9.9.9/api",
+        "/packages/sema-retry/0.1.0/source/unknown.sema",
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    package_version::Entity::delete_by_id(version.id)
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert!(sema_pkg::dal::api_docs::find(&state.db, version.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn api_reference_escapes_source_and_stays_version_specific() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "docescape", "docescape@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    for (version, source) in [
+        (
+            "1.0.0",
+            "(module test (export old) (define (old x) \"<script>alert(1)</script>\" x))",
+        ),
+        (
+            "2.0.0",
+            "(module test (export new) (define (new x y) \"New declaration\" y))",
+        ),
+    ] {
+        let bytes = tar_gz(&[
+            ("sema.toml", "[package]\nentrypoint='package.sema'"),
+            ("package.sema", source),
+        ]);
+        assert_eq!(
+            publish_package_full(app.clone(), &token, "api-versions", version, &bytes, "{}")
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-versions/1.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(response).await;
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!html.contains("<script>alert"));
+    assert!(!html.contains("New declaration"));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-versions/2.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_string(response).await.contains("New declaration"));
+}
+
+#[tokio::test]
+async fn api_reference_backfill_is_idempotent_and_verifies_archive_digest() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "docbackfill", "docbackfill@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    assert_eq!(
+        publish_package_full(
+            app.clone(),
+            &token,
+            "api-backfill",
+            "1.0.0",
+            include_bytes!("fixtures/sema-retry-0.1.0.tar.gz"),
+            "{}"
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    use sema_pkg::entity::package_api_doc;
+    package_api_doc::Entity::delete_many()
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (1, 0)
+    );
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (0, 1)
+    );
+    package_api_doc::Entity::delete_many()
+        .exec(&state.db)
+        .await
+        .unwrap();
+    package_version::Entity::update_many()
+        .col_expr(
+            package_version::Column::ChecksumSha256,
+            sea_orm::sea_query::Expr::value("incorrect"),
+        )
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (0, 1)
+    );
+    assert_eq!(
+        package_api_doc::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn api_reference_diagnostic_does_not_block_publish_and_flag_disables_routes() {
+    let (app, mut state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "docmissing", "docmissing@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    assert_eq!(
+        publish_package(
+            app.clone(),
+            &token,
+            "api-missing",
+            "1.0.0",
+            b"not a source archive"
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-missing/1.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_string(response).await.contains("api-docs-notice"));
+    drop(app);
+    std::sync::Arc::get_mut(&mut state)
+        .unwrap()
+        .config
+        .api_docs_enabled = false;
+    let app = sema_pkg::build_router(state);
+    for suffix in ["api", "api/print", "api.md", "source/package.sema"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/api-missing/1.0.0/{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
+
 // ── Auth Tests ──
 
 #[tokio::test]
@@ -1788,6 +2056,7 @@ fn test_check_production_secrets_rejects_default_key_with_github() {
         blob_s3_secret_access_key: None,
         max_tarball_bytes: 1024,
         max_dependencies: 64,
+        api_docs_enabled: true,
         rate_limit_enabled: false,
         rate_limit_rps: 20,
         rate_limit_burst: 40,

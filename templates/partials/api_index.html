@@ -1,0 +1,19 @@
+<aside class="api-index" aria-label="API index">
+  <details class="api-index-disclosure" open>
+  <summary class="disclosure-summary">{% include "partials/disclosure_icon.html" %}Browse exports <span>{{ index_entries.len() }}</span></summary>
+  <div class="api-filter" hidden>
+    <input id="api-search" type="search" aria-label="Find an export" placeholder="Find an export..." autocomplete="off" spellcheck="false" aria-controls="api-export-index">
+    <span id="api-results" role="status" aria-live="polite"></span>
+  </div>
+  <nav aria-label="Exports" id="api-export-index">
+    <ul>{% for entry in index_entries %}
+      <li data-api-index="{{ entry.anchor }}" data-api-search="{{ entry.name }} {% if let Some(docstring) = entry.docstring %}{{ docstring }}{% endif %}">
+        <a href="/packages/{{ name }}/{{ version }}/api#{{ entry.anchor }}"><span>{{ entry.name }}</span>{% if entry.parameters.is_none() %}<small>unresolved</small>{% endif %}</a>
+      </li>
+    {% endfor %}</ul>
+    <a class="api-source-file" href="{{ source_url }}"{% if source_view %} aria-current="page"{% endif %}>
+      <svg width="14" height="16" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M9 1H2v16h12V6zM9 1v5h5"/></svg><span>{{ source_path }}</span>
+    </a>
+  </nav>
+  </details>
+</aside>
