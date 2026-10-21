@@ -1,0 +1,17 @@
+<li class="audit-entry" data-testid="audit-entry">
+  <div class="audit-time">
+    <span x-text="timeAgo(entry.created_at)"></span>
+    <time :datetime="entry.created_at.replace(' ', 'T') + 'Z'" x-text="entry.created_at + ' UTC'"></time>
+  </div>
+  <div class="audit-content">
+    <div class="audit-summary">
+      <span class="audit-actor" x-text="entry.actor"></span>
+      <span class="audit-action" x-text="auditLabel(entry.action)"></span>
+      <span class="audit-target" x-show="entry.target_name">
+        <span class="audit-target-type" x-show="auditTargetType(entry)" x-text="auditTargetType(entry)"></span>
+        <strong x-text="entry.target_name"></strong>
+      </span>
+    </div>
+    <p class="audit-detail" x-show="entry.detail" x-text="auditDetail(entry)"></p>
+  </div>
+</li>

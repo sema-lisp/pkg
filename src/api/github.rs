@@ -319,7 +319,7 @@ pub async fn webhook(
     // A missing/empty webhook secret must never validate: HMAC with an empty
     // key is attacker-computable, so treat it as a misconfigured package and
     // refuse rather than accepting a forged signature.
-    let webhook_secret = pkg.webhook_secret.unwrap_or_default();
+    let webhook_secret = pkg.webhook_secret.as_deref().unwrap_or_default();
     if webhook_secret.is_empty() {
         return Err(ApiError::forbidden(
             "Package has no webhook secret configured",
@@ -327,7 +327,7 @@ pub async fn webhook(
     }
 
     // Verify HMAC signature
-    let expected_sig = format!("sha256={}", compute_hmac(&webhook_secret, &body));
+    let expected_sig = format!("sha256={}", compute_hmac(webhook_secret, &body));
     if !constant_time_eq(signature.as_bytes(), expected_sig.as_bytes()) {
         return Err(ApiError::forbidden("Invalid signature"));
     }
@@ -371,15 +371,8 @@ pub async fn webhook(
     {
         Ok(true) => {
             tracing::info!("Webhook: synced {repo_full_name} tag {tag_name} as {version}");
-            crate::audit::log(
-                &state.db,
-                "system",
-                "webhook_sync",
-                Some("package"),
-                Some(repo_full_name),
-                Some(tag_name),
-            )
-            .await;
+            crate::audit::log_webhook_sync(&state.db, &pkg, repo_full_name, tag_name, &version)
+                .await;
             Ok(Json(
                 serde_json::json!({"ok": true, "version": version.to_string(), "imported": true}),
             ))

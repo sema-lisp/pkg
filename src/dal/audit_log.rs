@@ -5,7 +5,9 @@
 //! every user value as a bound parameter, then interpolates only the assembled
 //! fragment string into the query — injection-safe and portable across engines.
 
-use sea_orm::{ActiveModelTrait, ConnectionTrait, Set, Value};
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DatabaseBackend, DbErr, FromQueryResult, Set, Value,
+};
 
 use crate::dal::time;
 use crate::entity::audit_log;
@@ -40,58 +42,68 @@ pub struct AuditFilter {
     pub offset: i64,
 }
 
-/// One audit-trail entry.
-pub struct AuditRow {
-    pub id: i64,
-    pub actor: String,
-    pub action: String,
-    pub target_type: Option<String>,
-    pub target_name: Option<String>,
-    pub detail: Option<String>,
-    pub created_at: String,
-}
-
 /// List audit entries matching `filter`, newest first. Returns the page of rows
 /// plus the total number of matching entries.
-pub async fn list<C: ConnectionTrait>(db: &C, filter: &AuditFilter) -> (Vec<AuditRow>, i64) {
-    let mut where_clauses: Vec<String> = vec!["1=1".to_string()];
+pub async fn list<C: ConnectionTrait>(
+    db: &C,
+    filter: &AuditFilter,
+) -> Result<(Vec<audit_log::Model>, i64), DbErr> {
+    let mut where_clauses = Vec::new();
     let mut binds: Vec<Value> = Vec::new();
 
     if let Some(ref action) = filter.action {
-        where_clauses.push("action = ?".to_string());
+        where_clauses.push("action = ?");
         binds.push(action.clone().into());
     }
 
     if let Some(ref q) = filter.q {
         let pattern = format!("%{q}%");
-        where_clauses.push("(actor LIKE ? OR target_name LIKE ? OR detail LIKE ?)".to_string());
+        where_clauses.push("(actor LIKE ? OR target_name LIKE ? OR detail LIKE ?)");
         binds.push(pattern.clone().into());
         binds.push(pattern.clone().into());
         binds.push(pattern.into());
     }
 
-    let where_sql = where_clauses.join(" AND ");
+    // An unfiltered COUNT(*) can use SQLite's fast count operation. Even
+    // WHERE 1=1 prevents that optimization and walks every index entry.
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_clauses.join(" AND "))
+    };
 
-    // Get total count
-    let count_sql = format!("SELECT COUNT(*) as cnt FROM audit_log WHERE {where_sql}");
-    let count_result = db
+    let count_sql = format!("SELECT COUNT(*) FROM audit_log{where_sql}");
+    let total: i64 = match db
         .query_one(crate::db::stmt(
             db.get_database_backend(),
             &count_sql,
             binds.clone(),
         ))
-        .await;
-    let total: i64 = match count_result {
-        Ok(Some(row)) => row.try_get_by_index::<i64>(0).unwrap_or(0),
-        _ => 0,
+        .await?
+    {
+        Some(row) => row.try_get_by_index(0)?,
+        None => 0,
     };
+    if filter.offset >= total {
+        return Ok((Vec::new(), total));
+    }
 
-    // Get entries
+    // If all text matches fit on one page, SQLite's date index can still walk
+    // the entire history and fetch every row to check the text. Scan the table
+    // directly in that case; otherwise let the ordered index stop at LIMIT.
+    let index_hint = if db.get_database_backend() == DatabaseBackend::Sqlite
+        && filter.q.is_some()
+        && filter.action.is_none()
+        && total <= filter.limit
+    {
+        " NOT INDEXED"
+    } else {
+        ""
+    };
     let sql = format!(
         r#"SELECT id, actor, action, target_type, target_name, detail, created_at
-           FROM audit_log
-           WHERE {where_sql}
-           ORDER BY created_at DESC
+           FROM audit_log{index_hint}{where_sql}
+           ORDER BY created_at DESC, id DESC
            LIMIT ? OFFSET ?"#
     );
 
@@ -99,27 +111,13 @@ pub async fn list<C: ConnectionTrait>(db: &C, filter: &AuditFilter) -> (Vec<Audi
     all_binds.push(filter.limit.into());
     all_binds.push(filter.offset.into());
 
-    let rows = db
-        .query_all(crate::db::stmt(db.get_database_backend(), &sql, all_binds))
-        .await
-        .unwrap_or_default();
+    let entries = audit_log::Model::find_by_statement(crate::db::stmt(
+        db.get_database_backend(),
+        &sql,
+        all_binds,
+    ))
+    .all(db)
+    .await?;
 
-    let entries = rows
-        .iter()
-        .map(|r| AuditRow {
-            id: r.try_get_by::<i64, _>("id").unwrap_or(0),
-            actor: r.try_get_by::<String, _>("actor").unwrap_or_default(),
-            action: r.try_get_by::<String, _>("action").unwrap_or_default(),
-            target_type: r
-                .try_get_by::<Option<String>, _>("target_type")
-                .unwrap_or(None),
-            target_name: r
-                .try_get_by::<Option<String>, _>("target_name")
-                .unwrap_or(None),
-            detail: r.try_get_by::<Option<String>, _>("detail").unwrap_or(None),
-            created_at: r.try_get_by::<String, _>("created_at").unwrap_or_default(),
-        })
-        .collect();
-
-    (entries, total)
+    Ok((entries, total))
 }
