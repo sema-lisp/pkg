@@ -6,7 +6,7 @@
 
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DbErr,
-    EntityTrait, PaginatorTrait, QueryFilter, Set,
+    EntityTrait, PaginatorTrait, QueryFilter, Set, TransactionTrait,
 };
 
 use crate::dal::time;
@@ -457,58 +457,94 @@ pub async fn yank_all<C: ConnectionTrait>(db: &C, name: &str) -> u64 {
     result.map(|r| r.rows_affected()).unwrap_or(0)
 }
 
-/// Admin: delete a package and everything hanging off it — dependencies (via a
-/// version_id subquery), versions, owners, the package row, and any reports
-/// targeting it. Best-effort per step.
+/// Delete a package and its dependent rows, recording the removed version
+/// count and each open report's context in the same transaction.
 ///
 /// Returns `None` if no package with `name` exists (so the caller can 404), else
 /// `Some(orphaned_blob_keys)` — the blob keys no longer referenced by any
 /// remaining version, which the caller should delete from the blob store.
 /// Content-addressed blobs can be shared across packages, so a key is only
 /// orphaned when nothing else points at it.
-pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> Option<Vec<String>> {
-    let pkg_id = find_by_name(db, name).await.ok().flatten()?.id;
+pub async fn delete_by_name<C: ConnectionTrait + TransactionTrait>(
+    db: &C,
+    name: &str,
+    actor: &str,
+) -> Result<Option<Vec<String>>, DbErr> {
+    let txn = db.begin().await?;
+    let Some(pkg) = find_by_name(&txn, name).await? else {
+        return Ok(None);
+    };
+    let pkg_id = pkg.id;
+
+    let open_reports = report::Entity::find()
+        .filter(report::Column::TargetType.eq("package"))
+        .filter(report::Column::TargetName.eq(name))
+        .filter(report::Column::Status.eq("open"))
+        .all(&txn)
+        .await?;
 
     // The blob keys this package's versions reference, before deleting them.
     let keys: Vec<String> = package_version::Entity::find()
         .filter(package_version::Column::PackageId.eq(pkg_id))
-        .all(db)
-        .await
-        .unwrap_or_default()
+        .all(&txn)
+        .await?
         .into_iter()
         .map(|v| v.blob_key)
         .collect();
 
     // Delete dependencies via version_id join (raw SQL for subquery)
-    let _ = db
+    txn
         .execute(crate::db::stmt(
-            db.get_database_backend(),
+            txn.get_database_backend(),
             "DELETE FROM dependencies WHERE version_id IN (SELECT id FROM package_versions WHERE package_id = ?)",
             [pkg_id.into()],
         ))
-        .await;
+        .await?;
 
     // Delete versions
-    let _ = package_version::Entity::delete_many()
+    let version_count = package_version::Entity::delete_many()
         .filter(package_version::Column::PackageId.eq(pkg_id))
-        .exec(db)
-        .await;
+        .exec(&txn)
+        .await?
+        .rows_affected;
 
     // Delete owners
-    let _ = owner::Entity::delete_many()
+    owner::Entity::delete_many()
         .filter(owner::Column::PackageId.eq(pkg_id))
-        .exec(db)
-        .await;
+        .exec(&txn)
+        .await?;
 
     // Delete the package
-    let _ = package::Entity::delete_by_id(pkg_id).exec(db).await;
+    package::Entity::delete_by_id(pkg_id).exec(&txn).await?;
 
     // Clean up any reports targeting this package
-    let _ = report::Entity::delete_many()
+    report::Entity::delete_many()
         .filter(report::Column::TargetType.eq("package"))
         .filter(report::Column::TargetName.eq(name))
-        .exec(db)
-        .await;
+        .exec(&txn)
+        .await?;
+
+    for report in &open_reports {
+        super::audit_log::record(
+            &txn,
+            actor,
+            "action_report",
+            Some("report"),
+            Some(&report.id.to_string()),
+            Some(&crate::audit::report_detail(report, "package removed")),
+        )
+        .await?;
+    }
+    let suffix = if version_count == 1 { "" } else { "s" };
+    super::audit_log::record(
+        &txn,
+        actor,
+        "remove_package",
+        Some("package"),
+        Some(name),
+        Some(&format!("Removed {version_count} version{suffix}")),
+    )
+    .await?;
 
     // A key is orphaned only if no remaining version (of any package) uses it.
     let mut orphaned = Vec::new();
@@ -519,14 +555,14 @@ pub async fn delete_by_name<C: ConnectionTrait>(db: &C, name: &str) -> Option<Ve
         }
         let still_used = package_version::Entity::find()
             .filter(package_version::Column::BlobKey.eq(&key))
-            .count(db)
-            .await
-            .unwrap_or(1);
+            .count(&txn)
+            .await?;
         if still_used == 0 {
             orphaned.push(key);
         }
     }
-    Some(orphaned)
+    txn.commit().await?;
+    Ok(Some(orphaned))
 }
 
 /// A single search hit: `(name, description, created_at)`.

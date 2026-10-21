@@ -75,6 +75,7 @@
 /* ── Main ── */
 .admin-main {
   flex: 1;
+  min-width: 0;
   padding: 1.5rem 2rem;
 }
 
@@ -347,34 +348,74 @@
 }
 
 /* ── Audit log ── */
+.audit-list { list-style: none; }
+
 .audit-entry {
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.6rem 0;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem 0;
   border-bottom: 1px solid var(--border);
-  font-size: 0.72rem;
-  align-items: baseline;
+  font-size: 0.875rem;
 }
 
 .audit-time {
-  color: var(--text-dim);
-  flex-shrink: 0;
-  width: 100px;
-  font-size: 0.65rem;
+  color: var(--text);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-time time { display: block; margin-top: 0.2rem; }
+.audit-summary { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: baseline; }
+.audit-content { min-width: 0; overflow-wrap: anywhere; }
+.audit-target { display: inline-flex; flex-wrap: wrap; gap: 0.4rem; }
+.audit-target-type { color: var(--text); font-size: 0.75rem; }
+.audit-target strong { color: var(--text-bright); font-weight: 500; }
+.audit-detail { color: var(--text); margin-top: 0.35rem; white-space: pre-wrap; line-height: 1.65; }
+.audit-meta { color: var(--text); font-size: 0.75rem; margin-bottom: 0.25rem; }
+.audit-description { color: var(--text); }
+.audit-toolbar { align-items: flex-end; flex-wrap: wrap; }
+.audit-field { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.audit-field:first-child { flex: 1; max-width: 480px; }
+.audit-field label { color: var(--text); font-size: 0.7rem; }
+.audit-field :is(input, select) { font-size: 0.8rem; min-height: 38px; }
+.audit-field .toolbar-search { width: 100%; max-width: none; }
+.audit-field input::placeholder { color: var(--text); }
+.audit-field :is(input, select):focus-visible,
+.confirm-reason:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }
 
 .audit-actor {
   color: var(--gold);
-  flex-shrink: 0;
-  width: 90px;
 }
+.audit-message { font-size: 0.75rem; padding: 1rem 0; }
+.audit-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.audit-pagination .action-btn { padding: 0.3rem 0.6rem; }
+.audit-pagination span { font-size: 0.75rem; }
 
 .audit-action {
   color: var(--text);
-  flex: 1;
 }
 
-.audit-action strong { color: var(--text-bright); font-weight: 500; }
+@media (max-width: 700px) {
+  .admin-layout { flex-direction: column; }
+  .sidebar { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; padding: 0.5rem; }
+  .sidebar-section { display: contents; }
+  .sidebar-label { display: none; }
+  .sidebar-link { padding: 0.65rem; }
+  .admin-main { padding: 1.25rem; }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .audit-entry { grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
+  .audit-time { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .audit-time time { margin: 0; }
+  .audit-field { width: 100%; }
+  .audit-field:first-child { flex-basis: 100%; max-width: none; }
+  .audit-field :is(input, select) { font-size: 1rem; min-height: 44px; }
+  .audit-pagination .action-btn { min-height: 44px; }
+  .confirm-reason { font-size: 1rem; }
+}
 
 /* ── Confirm dialog ── */
 .confirm-dialog {
@@ -409,6 +450,9 @@
   gap: 0.5rem;
   justify-content: flex-end;
 }
+
+.confirm-dialog .form-label { color: var(--text); }
+.confirm-reason { max-width: none; resize: vertical; }
 
 /* ── Toast ── */
 .toast {
@@ -455,7 +499,7 @@
       <div class="sidebar-link" data-testid="nav-audit" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h9v1H2V9zm0 3h7v1H2v-1z"/></svg>
         Audit Log
-        <span class="sidebar-count" x-show="auditLog.length > 0" x-text="auditLog.length" x-cloak></span>
+        <span class="sidebar-count" x-show="auditCount > 0" x-text="auditCount.toLocaleString()" x-cloak></span>
       </div>
     </div>
     <div class="sidebar-section">
@@ -509,18 +553,14 @@
       </div>
 
       <div style="font-size:0.6rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim); margin-bottom:0.75rem;">Recent Activity</div>
-      <div>
-        <template x-for="entry in auditLog.slice(0, 8)" :key="entry.id">
-          <div class="audit-entry" data-testid="audit-entry">
-            <span class="audit-time" :title="entry.created_at" x-text="timeAgo(entry.created_at)"></span>
-            <span class="audit-actor" x-text="entry.actor"></span>
-            <span class="audit-action" x-html="entry.action"></span>
-          </div>
+      <ol class="audit-list" aria-label="Recent activity">
+        <template x-for="entry in recentActivity" :key="entry.id">
+          {% include "admin_audit_entry.html" %}
         </template>
-        <template x-if="auditLog.length === 0">
-          <div style="color:var(--text-dim); font-size:0.72rem; padding:1rem 0;">No recent activity.</div>
+        <template x-if="recentActivity.length === 0">
+          <li class="audit-message">No recent activity.</li>
         </template>
-      </div>
+      </ol>
     </div>
 
     <!-- Users -->
@@ -658,40 +698,41 @@
     <!-- Audit Log -->
     <div x-show="tab === 'audit'" x-cloak>
       <h1 class="page-title" data-testid="page-title">Audit Log</h1>
-      <p class="page-desc">All administrative and system actions</p>
+      <p class="page-desc audit-description">Recorded account, package, and administrative actions. Entries have no automatic expiry.</p>
 
-      <div class="toolbar">
-        <input type="text" class="toolbar-search" data-testid="audit-search" placeholder="Filter events..." x-model="auditSearch" @input.debounce.300ms="auditPage = 1; loadAudit()">
-        <select class="toolbar-filter" x-model="auditFilter" @change="auditPage = 1; loadAudit()">
-          <option value="all">All events</option>
-          <option value="admin">Admin actions</option>
-          <option value="publish">Publishes</option>
-          <option value="ban">Bans/unbans</option>
-          <option value="webhook">Webhooks</option>
-        </select>
+      <div class="toolbar audit-toolbar">
+        <div class="audit-field">
+          <label for="audit-search">Search events</label>
+          <input id="audit-search" name="q" type="search" class="toolbar-search" data-testid="audit-search" placeholder="Actor, target, or detail" x-model="auditSearch" @input.debounce.300ms="auditPage = 1; loadAudit()">
+        </div>
+        <div class="audit-field">
+          <label for="audit-filter">Event type</label>
+          <select id="audit-filter" name="action" class="toolbar-filter" data-testid="audit-filter" x-model="auditFilter" @change="auditPage = 1; loadAudit()">
+            <option value="all">All events</option>
+            <template x-for="action in auditActions" :key="action.value">
+              <option :value="action.value" x-text="action.label"></option>
+            </template>
+          </select>
+        </div>
       </div>
 
-      <div>
+      <p class="audit-meta" role="status" x-text="auditLoading ? 'Loading events…' : auditError || auditTotal.toLocaleString() + (auditTotal === 1 ? ' event' : ' events')"></p>
+      <button class="action-btn action-btn-ghost" x-show="auditError" @click="loadAudit()">Try again</button>
+      <ol class="audit-list" aria-label="Audit events" :aria-busy="auditLoading" x-show="!auditError">
         <template x-for="entry in auditLog" :key="entry.id">
-          <div class="audit-entry" data-testid="audit-entry">
-            <span class="audit-time" :title="entry.created_at" x-text="timeAgo(entry.created_at)"></span>
-            <span class="audit-actor" x-text="entry.actor"></span>
-            <span class="audit-action" x-html="entry.action"></span>
-          </div>
+          {% include "admin_audit_entry.html" %}
         </template>
-        <template x-if="auditLog.length === 0">
-          <div style="color:var(--text-dim); font-size:0.72rem; padding:1rem 0;">No audit entries found.</div>
+        <template x-if="!auditLoading && auditLog.length === 0">
+          <li class="audit-message">No audit entries found.</li>
         </template>
-      </div>
-      <div style="display:flex; justify-content:center; align-items:center; gap:0.75rem; margin-top:1rem; padding-top:0.75rem; border-top:1px solid var(--border);"
-           x-show="auditTotal > perPage">
-        <button class="action-btn action-btn-ghost" style="padding:0.3rem 0.6rem;"
-                @click="auditPage--; loadAudit()" :disabled="auditPage <= 1">← Prev</button>
-        <span style="font-size:0.65rem; color:var(--text-dim);"
-              x-text="auditPage + ' / ' + Math.ceil(auditTotal / perPage)"></span>
-        <button class="action-btn action-btn-ghost" style="padding:0.3rem 0.6rem;"
-                @click="auditPage++; loadAudit()" :disabled="auditPage >= Math.ceil(auditTotal / perPage)">Next →</button>
-      </div>
+      </ol>
+      <nav class="audit-pagination" aria-label="Audit pages" x-show="auditTotal > perPage && !auditError">
+        <button class="action-btn action-btn-ghost"
+                @click="auditPage--; loadAudit()" :disabled="auditLoading || auditPage <= 1">← Prev</button>
+        <span x-text="auditPage.toLocaleString() + ' / ' + Math.ceil(auditTotal / perPage).toLocaleString()"></span>
+        <button class="action-btn action-btn-ghost"
+                @click="auditPage++; loadAudit()" :disabled="auditLoading || auditPage >= Math.ceil(auditTotal / perPage)">Next →</button>
+      </nav>
     </div>
 
     <!-- Reports -->
@@ -853,6 +894,12 @@
       <div class="confirm-dialog" data-testid="confirm-dialog">
         <div class="confirm-title" data-testid="confirm-title" x-text="confirm.title"></div>
         <div class="confirm-body" x-html="confirm.body"></div>
+        <template x-if="confirm.action === 'ban'">
+          <div class="form-group">
+            <label class="form-label" for="ban-reason">Reason (optional)</label>
+            <textarea id="ban-reason" name="reason" class="form-input confirm-reason" data-testid="ban-reason" rows="3" x-model="confirm.reason"></textarea>
+          </div>
+        </template>
         <div class="confirm-actions">
           <button class="action-btn action-btn-ghost" data-testid="confirm-cancel" style="padding:0.4rem 0.8rem;" @click="confirm = null">Cancel</button>
           <button class="action-btn" data-testid="confirm-accept" :class="confirm.btnClass" style="padding:0.4rem 0.8rem;" @click="executeAction()" x-text="confirm.btnText"></button>
@@ -894,6 +941,27 @@ function adminPanel() {
     pkgFilter: 'all',
     auditSearch: '',
     auditFilter: 'all',
+    auditActions: [
+      { value: 'publish', label: 'Published' },
+      { value: 'yank', label: 'Yanked version' },
+      { value: 'yank_all', label: 'Yanked all versions' },
+      { value: 'remove_package', label: 'Removed package' },
+      { value: 'link_repo', label: 'Linked repository' },
+      { value: 'webhook_sync', label: 'Synced webhook' },
+      { value: 'add_owner', label: 'Added owner' },
+      { value: 'remove_owner', label: 'Removed owner' },
+      { value: 'transfer_ownership', label: 'Transferred ownership' },
+      { value: 'ban_user', label: 'Banned user' },
+      { value: 'unban_user', label: 'Unbanned user' },
+      { value: 'revoke_tokens', label: 'Revoked tokens' },
+      { value: 'set_role', label: 'Changed role' },
+      { value: 'action_report', label: 'Actioned report' },
+      { value: 'dismiss_report', label: 'Dismissed report' },
+      { value: 'register', label: 'Registered' },
+      { value: 'create_admin', label: 'Created admin' },
+      { value: 'token_create', label: 'Created token' },
+      { value: 'reset_password', label: 'Reset password' },
+    ],
     userDrawer: null,
     pkgDrawer: null,
     confirm: null,
@@ -909,21 +977,26 @@ function adminPanel() {
     reportTotal: 0,
     auditPage: 1,
     auditTotal: 0,
+    auditCount: 0,
+    auditLoading: false,
+    auditError: '',
     perPage: 50,
 
     stats: { total_users: 0, total_packages: 0, banned_users: 0, open_reports: 0 },
     users: [],
     packages: [],
     auditLog: [],
+    recentActivity: [],
     reports: [],
 
     // Track which tabs have been loaded to avoid redundant fetches
-    _loaded: { users: false, packages: false, audit: false, reports: false },
+    _loaded: { users: false, packages: false, reports: false },
+    _auditRequest: 0,
 
     async init() {
       await Promise.all([
         this.loadStats(),
-        this.loadAudit(),
+        this.loadRecentActivity(),
         this.loadReports(),
       ]);
     },
@@ -931,7 +1004,7 @@ function adminPanel() {
     async switchTab(name) {
       this.tab = name;
       if (name === 'dashboard') {
-        await Promise.all([this.loadStats(), this.loadAudit()]);
+        await Promise.all([this.loadStats(), this.loadRecentActivity()]);
       } else if (name === 'users') {
         if (!this._loaded.users) await this.loadUsers();
       } else if (name === 'packages') {
@@ -994,7 +1067,40 @@ function adminPanel() {
       }
     },
 
+    auditLabel(action) {
+      return this.auditActions.find(item => item.value === action)?.label || action.replaceAll('_', ' ');
+    },
+
+    auditDetail(entry) {
+      if (!entry.detail) return '';
+      if (['publish', 'yank'].includes(entry.action)) return 'Version: ' + entry.detail;
+      if (['add_owner', 'remove_owner'].includes(entry.action)) return 'Owner: ' + entry.detail;
+      if (entry.action === 'link_repo') return 'Repository: ' + entry.detail;
+      return entry.detail;
+    },
+
+    auditTargetType(entry) {
+      const type = entry.target_type || '';
+      return this.auditLabel(entry.action).toLowerCase().endsWith(' ' + type) ? '' : type;
+    },
+
+    async loadRecentActivity() {
+      try {
+        const res = await fetch('/api/v1/admin/audit?per_page=8');
+        if (res.ok) {
+          const data = await res.json();
+          this.recentActivity = data.entries;
+          this.auditCount = data.total;
+        }
+      } catch (e) {
+        console.error('Failed to load recent activity:', e);
+      }
+    },
+
     async loadAudit() {
+      const request = ++this._auditRequest;
+      this.auditLoading = true;
+      this.auditError = '';
       try {
         const params = new URLSearchParams();
         if (this.auditSearch) params.set('q', this.auditSearch);
@@ -1002,14 +1108,16 @@ function adminPanel() {
         params.set('page', this.auditPage);
         params.set('per_page', this.perPage);
         const res = await fetch('/api/v1/admin/audit?' + params);
-        if (res.ok) {
-          const data = await res.json();
-          this.auditLog = data.entries || [];
-          this.auditTotal = data.total || 0;
-          this._loaded.audit = true;
-        }
+        if (!res.ok) throw new Error('Audit request failed');
+        const data = await res.json();
+        if (request !== this._auditRequest) return;
+        this.auditLog = data.entries;
+        this.auditTotal = data.total;
+        if (!this.auditSearch && this.auditFilter === 'all') this.auditCount = data.total;
       } catch (e) {
-        console.error('Failed to load audit log:', e);
+        if (request === this._auditRequest) this.auditError = 'Could not load audit events. Try again.';
+      } finally {
+        if (request === this._auditRequest) this.auditLoading = false;
       }
     },
 
@@ -1070,11 +1178,11 @@ function adminPanel() {
         'yank-all': { title: 'Yank All Versions', body: `Yank every version of <strong>${name}</strong>? The package will remain visible but all versions will be marked as yanked and uninstallable.`, btnText: 'Yank All', btnClass: 'action-btn-warn' },
         'remove': { title: 'Remove Package', body: `Permanently remove <strong>${name}</strong>? This will delete the package and all versions from the registry. This cannot be undone.`, btnText: 'Remove', btnClass: 'action-btn-danger' },
       };
-      this.confirm = { ...configs[action], action, target };
+      this.confirm = { ...configs[action], action, target, reason: '' };
     },
 
     async executeAction() {
-      const { action, target } = this.confirm;
+      const { action, target, reason } = this.confirm;
       const name = target.username || target.name || target.target_name;
       const userId = target.id;
       this.confirm = null;
@@ -1082,7 +1190,11 @@ function adminPanel() {
       try {
         let res;
         if (action === 'ban') {
-          res = await fetch('/api/v1/admin/users/' + userId + '/ban', { method: 'POST' });
+          res = await fetch('/api/v1/admin/users/' + userId + '/ban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason.trim() || null }),
+          });
           if (res.ok) {
             this.showToast(`Banned ${name}`, 'success');
             await this.loadUsers();
