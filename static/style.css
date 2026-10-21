@@ -76,6 +76,15 @@ body {
 a { color: var(--gold); text-decoration: none; transition: opacity 0.15s; }
 a:hover { opacity: 0.8; }
 
+.search-bar.package-search { max-width:22rem; min-width:0; }
+.package-search .search-input { min-width:0; }
+.site-header:has(.package-search) { gap:1rem; }
+@media (max-width:800px) {
+  .site-header:has(.package-search) { flex-wrap:wrap; height:auto; min-height:52px; padding:0.75rem 1rem; }
+  .site-header:has(.package-search) .header-nav { margin-inline-start:auto; flex-wrap:wrap; }
+  .search-bar.package-search { order:1; flex-basis:100%; max-width:none; }
+}
+
 /* ── Header ── */
 .site-header {
   display: flex;
