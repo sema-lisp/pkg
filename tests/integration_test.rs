@@ -3639,3 +3639,81 @@ async fn test_429_has_actionable_retry_after() {
     }
     assert!(saw_429, "expected a 429 to inspect");
 }
+
+#[tokio::test]
+async fn test_release_history_pagination_keeps_selected_release_and_bounds_rows() {
+    use sea_orm::{ActiveModelTrait, Set};
+    use sema_pkg::entity::{package, package_version};
+
+    let (app, state, _dir) = test_app_with_state().await;
+    let pkg = package::ActiveModel {
+        name: Set("paged-history".into()),
+        description: Set("Release pagination fixture".into()),
+        created_at: Set("2026-10-21 00:00:00".into()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+    for minor in 0..123 {
+        package_version::ActiveModel {
+            package_id: Set(pkg.id),
+            version: Set(format!("1.{minor}.0")),
+            checksum_sha256: Set("test".into()),
+            blob_key: Set("test".into()),
+            size_bytes: Set(1),
+            published_at: Set("2026-10-21 00:00:00".into()),
+            readme_html: Set(Some(format!("<p>Documentation for release {minor}</p>"))),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+    }
+    for (query, page, rows, first) in [
+        ("", 1, 50, 122),
+        ("?versions_page=0", 1, 50, 122),
+        ("?versions_page=2", 2, 50, 72),
+        ("?versions_page=3", 3, 23, 22),
+        ("?versions_page=18446744073709551615", 3, 23, 22),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/paged-history/1.7.0{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        let table = html
+            .split("data-testid=\"versions-table\"")
+            .nth(1)
+            .unwrap()
+            .split("</sema-tab-panel>")
+            .next()
+            .unwrap();
+        assert_eq!(table.matches("<tr>").count(), rows + 1);
+        assert!(table.contains(&format!("Page {page} of 3")));
+        assert!(table.contains(&format!("/packages/paged-history/1.{first}.0")));
+        assert!(html.contains("sema pkg add paged-history@1.7.0"));
+        assert!(html.contains("Documentation for release 7"));
+        assert!(html.contains("View all 123 versions"));
+        assert_eq!(html.matches("<tr>").count(), rows + 6);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/paged-history?versions_page=3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(response).await;
+    assert!(html.contains("sema pkg add paged-history@1.122.0"));
+    assert!(html.contains("Documentation for release 122"));
+}

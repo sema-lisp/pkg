@@ -30,6 +30,8 @@
 
   .detail-sidebar section {
     margin-bottom: 1.5rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .detail-sidebar .section-label {
@@ -72,6 +74,7 @@
 
   .dep-table {
     width: 100%;
+    overflow-wrap: anywhere;
     border-collapse: collapse;
     font-size: 0.78rem;
   }
@@ -122,6 +125,9 @@
     .detail-grid {
       grid-template-columns: minmax(0, 1fr);
     }
+    .detail-grid > * {
+      min-width: 0;
+    }
     .detail-sidebar {
       order: -1;
       display: grid;
@@ -168,7 +174,7 @@
     <sema-tabs hash-sync value="readme">
       <sema-tab value="readme" data-testid="tab-readme">Readme</sema-tab>
       <sema-tab value="changelog" data-testid="tab-changelog">Changelog</sema-tab>
-      <sema-tab value="versions" data-testid="tab-versions">Versions <span style="font-size:0.6rem; color:var(--text-dim);">{{ versions.len() }}</span></sema-tab>
+      <sema-tab value="versions" data-testid="tab-versions">Versions <span style="font-size:0.6rem; color:var(--text-dim);">{{ version_count }}</span></sema-tab>
       <sema-tab value="deps" data-testid="tab-deps">Dependencies <span style="font-size:0.6rem; color:var(--text-dim);">{{ deps.len() }}</span></sema-tab>
 
       <sema-tab-panel value="readme">
@@ -200,6 +206,17 @@
             {% endfor %}
           </tbody>
         </table>
+        {% if versions_pages > 1 %}
+        <nav aria-label="Version pages" style="display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:0.5rem; margin-top:1rem;">
+          {% if versions_page > 1 %}
+          <a href="?versions_page={{ versions_page - 1 }}#versions" class="btn btn-ghost">Previous</a>
+          {% endif %}
+          <span style="font-size:0.72rem; color:var(--text-dim);">Page {{ versions_page }} of {{ versions_pages }}</span>
+          {% if versions_page < versions_pages %}
+          <a href="?versions_page={{ versions_page + 1 }}#versions" class="btn btn-ghost">Next</a>
+          {% endif %}
+        </nav>
+        {% endif %}
       </sema-tab-panel>
 
       <sema-tab-panel value="deps">
@@ -288,13 +305,14 @@
       <section>
         <div class="section-label">Versions</div>
         <table class="data-table" style="font-size:0.72rem;">
-          {% for v in versions %}
+          {% for v in versions.iter().take(5) %}
           <tr>
             <td{% if let Some(selected) = selected_version %}{% if selected.version == v.version %} style="color:var(--gold);"{% endif %}{% endif %}>{{ v.version }}</td>
             <td style="color:var(--text-dim);">{{ v.published_at }}</td>
           </tr>
           {% endfor %}
         </table>
+        <a href="#versions" class="sidebar-link">View all {{ version_count }} versions</a>
       </section>
 
       <section>
