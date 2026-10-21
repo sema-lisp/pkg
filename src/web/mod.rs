@@ -189,6 +189,7 @@ pub struct SearchTemplate {
 #[derive(Template)]
 #[template(path = "package.html")]
 pub struct PackageTemplate {
+    pub source_label: Option<String>,
     pub release_version: Option<String>,
     pub api_section: bool,
     pub api_docs_enabled: bool,
@@ -522,6 +523,7 @@ async fn package_page(
     };
 
     render(PackageTemplate {
+        source_label: None,
         release_version: selected_version
             .as_ref()
             .map(|version| version.version.clone()),

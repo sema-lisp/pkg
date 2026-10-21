@@ -145,9 +145,6 @@
       {% endif %}
     </div>
     <p style="font-size:0.82rem; color:var(--text); margin-top:0.35rem;">{{ description }}</p>
-    {% if api_docs_enabled %}{% if let Some(v) = selected_version %}
-    <a class="package-api-link" data-testid="api-reference-link" href="/packages/{{ name }}/{{ v.version }}/api">API reference</a>
-    {% endif %}{% endif %}
     {% if let Some(notice) = release_notice %}
     <p style="font-size:0.72rem; color:var(--text-dim); margin-top:0.6rem;">{{ notice }}</p>
     {% endif %}
@@ -222,6 +219,12 @@
     </sema-tabs>
 
     <aside class="detail-sidebar">
+      {% if api_docs_enabled %}{% if let Some(v) = selected_version %}
+      <section>
+        <div class="section-label">Documentation</div>
+        <a class="sidebar-link" data-testid="api-reference-link" href="/packages/{{ name }}/{{ v.version }}/api">API reference</a>
+      </section>
+      {% endif %}{% endif %}
       {% if source == "github" %}
       {% if let Some(gh) = github_repo %}
       <section>

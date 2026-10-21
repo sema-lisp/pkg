@@ -1,0 +1,21 @@
+<aside class="api-index" aria-label="API index">
+  <details class="api-index-disclosure" open>
+  <summary>Browse exports <span>{{ index_entries.len() }}</span></summary>
+  <a class="api-index-home" href="/packages/{{ name }}/{{ version }}/api"{% if !source_view %} aria-current="page"{% endif %}>API reference</a>
+  <div class="api-filter" hidden>
+    <label for="api-search">Find an export</label>
+    <input id="api-search" type="search" placeholder="Filter exports…" autocomplete="off" spellcheck="false" aria-controls="api-export-tree">
+    <p id="api-results" role="status" aria-live="polite">{{ index_entries.len() }} exports</p>
+  </div>
+  <nav aria-label="Exports" id="api-export-tree">
+    <a class="api-tree-file" href="{{ source_url }}"{% if source_view %} aria-current="page"{% endif %}>
+      <svg width="14" height="16" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M9 1H2v16h12V6zM9 1v5h5"/></svg><span>{{ source_path }}</span>
+    </a>
+    <ul>{% for entry in index_entries %}
+      <li data-api-index="{{ entry.anchor }}" data-api-search="{{ entry.name }}">
+        <a href="{% if source_view %}{% if let Some(line) = entry.line %}#L{{ line }}{% else %}/packages/{{ name }}/{{ version }}/api#{{ entry.anchor }}{% endif %}{% else %}#{{ entry.anchor }}{% endif %}"><span>{{ entry.name }}</span>{% if entry.parameters.is_none() %}<small>unresolved</small>{% endif %}</a>
+      </li>
+    {% endfor %}</ul>
+  </nav>
+  </details>
+</aside>

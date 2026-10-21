@@ -16,10 +16,15 @@ test('published API reference, source, Markdown, offline print, and mobile layou
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(release);
   const packageHeader = await page.locator('.site-header').innerText();
-  await page.getByRole('link', { name: 'API reference', exact: true }).click();
+  await expect(page.locator('.detail-sidebar').getByRole('link', { name: 'API reference', exact: true })).toBeVisible();
+  const packageWidth = await page.locator('.page-content').evaluate(element => element.getBoundingClientRect().width);
+  await page.locator('.detail-sidebar').getByRole('link', { name: 'API reference', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${release}/api$`));
   expect(await page.locator('.site-header').innerText()).toBe(packageHeader);
   await expect(page.locator('[data-api-entry]')).toHaveCount(9);
+  expect(await page.locator('.page-content').evaluate(element => element.getBoundingClientRect().width)).toBe(packageWidth);
+  await expect(page.locator('.api-tree-file')).toHaveText('package.sema');
+  await expect(page.getByRole('link', { name: 'Print', exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('0.1.0');
 
   const search = page.getByRole('searchbox', { name: 'Find an export' });
@@ -33,9 +38,34 @@ test('published API reference, source, Markdown, offline print, and mobile layou
   await entry.getByText('View source definition', { exact: true }).click();
   await expect(entry.locator('.api-definition pre')).toBeVisible();
   expect(await entry.locator('.api-definition span[style]').count()).toBeGreaterThan(5);
+  expect(await entry.locator('.api-definition code').textContent()).toMatch(/^\(define \(retry\/with-timeout/);
   await entry.getByRole('link', { name: 'Source :217' }).click();
   await expect(page).toHaveURL(/source\/package.sema#L217$/);
   await expect(page.locator('#L217')).toContainText('(define (retry/with-timeout ms thunk)');
+  expect(await page.locator('.page-content').evaluate(element => element.getBoundingClientRect().width)).toBe(packageWidth);
+  await expect(page.locator('.api-tree-file')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-api-index]')).toHaveCount(9);
+  await page.goto(`${release}/source/package.sema`);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const hashCopy = page.getByRole('button', { name: 'Copy full source SHA-256' });
+  const digest = await hashCopy.getAttribute('data-copy-value');
+  expect(digest).toMatch(/^[a-f0-9]{64}$/);
+  await expect(hashCopy.locator('code')).toHaveText(`${digest!.slice(0, 12)}…`);
+  await hashCopy.click();
+  await expect(page.locator('.api-copy-status')).toHaveText('Full source SHA-256 copied.');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(digest);
+  await expect(hashCopy).toContainText('SHA-256');
+  await page.screenshot({ path: '../.impeccable/review/refined-source-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: '../.impeccable/review/refined-source-mobile.png' });
+  await page.getByText('Browse exports', { exact: false }).click();
+  await page.getByRole('searchbox', { name: 'Find an export' }).fill('retry/with-timeout');
+  await expect(page.locator('[data-api-index]:visible')).toHaveCount(1);
+  await page.locator('[data-api-index]:visible a').click();
+  await expect(page).toHaveURL(/#L217$/);
+  await expect(page.locator('[data-api-index]:visible a')).toHaveAttribute('aria-current', 'location');
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   const markdown = await request.get(`${release}/api.md`);
   expect(markdown.headers()['content-type']).toContain('text/markdown');
@@ -45,17 +75,18 @@ test('published API reference, source, Markdown, offline print, and mobile layou
   await page.goto(`${release}/api/print`);
   await expect(page.locator('article')).toHaveCount(9);
   expect(external).toEqual([]);
-  await page.screenshot({ path: '../.impeccable/review/api-print.png' });
+  await page.screenshot({ path: '../.impeccable/review/refined-print.png' });
   await page.goto(`${release}/api`);
   await page.locator('.api-definition summary').first().click();
-  await page.screenshot({ path: '../.impeccable/review/api-desktop.png' });
+  await page.screenshot({ path: '../.impeccable/review/refined-api-desktop.png' });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: '../.impeccable/review/api-mobile.png' });
+  await page.screenshot({ path: '../.impeccable/review/refined-api-mobile.png' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByText('Browse exports', { exact: false }).click();
   await expect(search).toBeVisible();
   await search.fill('retry/with-timeout');
   await expect(page.locator('[data-api-entry]:visible')).toHaveCount(1);
-  await page.screenshot({ path: '../.impeccable/review/api-mobile-filtered.png', fullPage: true });
+  await page.screenshot({ path: '../.impeccable/review/refined-api-mobile-filtered.png', fullPage: true });
 });
 
 test('API content and source disclosures work without JavaScript', async ({ browser, request, apiToken }) => {
@@ -79,7 +110,21 @@ test('API content and source disclosures work without JavaScript', async ({ brow
     await page.locator('.api-definition summary').first().click();
     await expect(page.locator('.api-definition pre').first()).toBeVisible();
     await expect(page.getByRole('link', { name: 'Markdown', exact: true })).toBeVisible();
+    await page.locator('.api-tree-file').click();
+    await expect(page.locator('.api-hash-static')).toBeVisible();
+    await expect(page.locator('.api-hash-copy')).toBeHidden();
+    await page.getByText('File details', { exact: true }).click();
+    await expect(page.locator('.api-file-details code')).toHaveText(/^[a-f0-9]{64}$/);
   } finally {
     await context.close();
+  }
+});
+
+test('public page shells share a maximum width', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const route of ['/', '/search', '/login', '/packages/missing-width-audit', '/missing-width-audit']) {
+    await page.goto(route);
+    const shell = page.locator('.page-content');
+    expect(await shell.evaluate(element => element.getBoundingClientRect().width), route).toBe(1024);
   }
 });

@@ -3,6 +3,7 @@
   <a href="/packages/{{ name }}">{{ name }}</a>
   {% if let Some(release) = release_version %}
   <span aria-hidden="true">/</span><a href="/packages/{{ name }}/{{ release }}"{% if !api_section %} aria-current="page"{% endif %}>{{ release }}</a>
-  {% if api_section %}<span aria-hidden="true">/</span><a href="/packages/{{ name }}/{{ release }}/api" aria-current="page">API</a>{% endif %}
+  {% if api_section %}<span aria-hidden="true">/</span><a href="/packages/{{ name }}/{{ release }}/api"{% if source_label.is_none() %} aria-current="page"{% endif %}>API</a>{% endif %}
+  {% if let Some(label) = source_label %}<span aria-hidden="true">/</span><span aria-current="page">{{ label }}</span>{% endif %}
   {% endif %}
 </nav>

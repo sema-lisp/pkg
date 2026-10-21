@@ -27,6 +27,9 @@ struct ReferenceTemplate {
     description: String,
     release_version: Option<String>,
     api_section: bool,
+    source_label: Option<String>,
+    source_view: bool,
+    index_entries: Vec<ApiEntry>,
     entries: Vec<EntryView>,
     message: String,
     source_path: String,
@@ -65,8 +68,14 @@ struct SourceTemplate {
     version: String,
     release_version: Option<String>,
     api_section: bool,
+    source_label: Option<String>,
+    source_view: bool,
+    index_entries: Vec<ApiEntry>,
+    description: String,
+    source_url: String,
     source_path: String,
     source_sha256: String,
+    source_sha256_short: String,
     lines: Vec<SourceLine>,
 }
 
@@ -116,6 +125,32 @@ fn source_url(name: &str, version: &str, path: &str) -> String {
     format!("/packages/{name}/{version}/source/{path}")
 }
 
+/// Remove the enclosing module's indentation for display. The stored source
+/// and the complete source viewer retain the original bytes and line numbers.
+fn definition_source(text: &str, start: usize, end: usize) -> String {
+    if start == 0 || end < start {
+        return String::new();
+    }
+    let lines: Vec<_> = text.lines().skip(start - 1).take(end - start + 1).collect();
+    let indent = lines.first().map_or(0, |line| {
+        line.bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count()
+    });
+    lines
+        .iter()
+        .map(|line| {
+            let trim = line
+                .bytes()
+                .take(indent)
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            &line[trim..]
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub async fn reference(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -131,9 +166,6 @@ pub async fn reference(
         .document
         .as_ref()
         .and_then(|document| document.source.as_ref());
-    let highlighted = source
-        .map(|source| crate::github_sync::highlight_source(&source.text))
-        .unwrap_or_default();
     let entries = release
         .document
         .as_ref()
@@ -142,9 +174,14 @@ pub async fn reference(
                 .entries
                 .iter()
                 .map(|entry| {
-                    let definition_html = match (entry.line, entry.end_line) {
-                        (Some(start), Some(end)) if start > 0 && end >= start => {
-                            highlighted.get(start - 1..end).unwrap_or_default().join("")
+                    let definition_html = match (source, entry.line, entry.end_line) {
+                        (Some(source), Some(start), Some(end)) => {
+                            crate::github_sync::highlight_source(&definition_source(
+                                &source.text,
+                                start,
+                                end,
+                            ))
+                            .join("")
                         }
                         _ => String::new(),
                     };
@@ -162,6 +199,13 @@ pub async fn reference(
         base_url: state.config.site_url().into(),
         release_version: Some(version.clone()),
         api_section: true,
+        source_label: None,
+        source_view: false,
+        index_entries: release
+            .document
+            .as_ref()
+            .map(|document| document.entries.clone())
+            .unwrap_or_default(),
         description: release.package.description,
         message,
         entries,
@@ -251,7 +295,8 @@ pub async fn source(
     };
     let Some(source) = release
         .document
-        .and_then(|document| document.source)
+        .as_ref()
+        .and_then(|document| document.source.as_ref())
         .filter(|source| source.path == path)
     else {
         return StatusCode::NOT_FOUND.into_response();
@@ -271,10 +316,20 @@ pub async fn source(
         base_url: state.config.site_url().into(),
         release_version: Some(version.clone()),
         api_section: true,
+        source_label: Some(source.path.clone()),
+        source_view: true,
+        index_entries: release
+            .document
+            .as_ref()
+            .map(|document| document.entries.clone())
+            .unwrap_or_default(),
+        description: release.package.description,
+        source_url: source_url(&name, &version, &source.path),
         name,
         version,
-        source_path: source.path,
-        source_sha256: source.sha256,
+        source_path: source.path.clone(),
+        source_sha256_short: source.sha256.chars().take(12).collect(),
+        source_sha256: source.sha256.clone(),
         lines,
     })
     .into_response()
@@ -348,4 +403,21 @@ pub async fn markdown(
         output,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::definition_source;
+
+    #[test]
+    fn definition_display_removes_module_indent_without_flattening_body() {
+        let source =
+            "(module example\n  (define (f x)\n    \"Description\nContinuation\"\n    (+ x 1)))\n";
+        assert_eq!(
+            definition_source(source, 2, 5),
+            "(define (f x)\n  \"Description\nContinuation\"\n  (+ x 1)))"
+        );
+        assert_eq!(definition_source(source, 0, 5), "");
+        assert_eq!(definition_source(source, 5, 2), "");
+    }
 }
