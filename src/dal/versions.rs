@@ -112,6 +112,25 @@ fn release_candidate(row: &sea_orm::QueryResult) -> ReleaseCandidate {
     }
 }
 
+const CANDIDATE_COLUMNS: &str = "id, package_id, version, size_bytes, checksum_sha256, yanked, sema_version_req, tarball_url, published_at";
+
+/// Look up an exact release through the unique package/version index.
+pub async fn find_candidate<C: ConnectionTrait>(
+    db: &C,
+    package_id: i64,
+    version: &str,
+) -> Result<Option<ReleaseCandidate>, DbErr> {
+    db.query_one(crate::db::stmt(
+        db.get_database_backend(),
+        &format!(
+            "SELECT {CANDIDATE_COLUMNS} FROM package_versions WHERE package_id = ? AND version = ?"
+        ),
+        [package_id.into(), version.into()],
+    ))
+    .await
+    .map(|row| row.as_ref().map(release_candidate))
+}
+
 /// List releases without loading their potentially large rendered documents.
 pub async fn list_candidates_for_package<C: ConnectionTrait>(
     db: &C,
@@ -132,7 +151,7 @@ pub async fn list_candidates_for_packages<C: ConnectionTrait>(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT id, package_id, version, size_bytes, checksum_sha256, yanked, sema_version_req, tarball_url, published_at FROM package_versions WHERE package_id IN ({placeholders})"
+        "SELECT {CANDIDATE_COLUMNS} FROM package_versions WHERE package_id IN ({placeholders})"
     );
     db.query_all(crate::db::stmt(
         db.get_database_backend(),
