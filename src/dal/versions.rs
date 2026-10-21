@@ -208,16 +208,9 @@ pub async fn set_documents<C: ConnectionTrait>(
 }
 
 pub fn sort_candidates_for_display(versions: &mut [ReleaseCandidate]) {
-    versions.sort_by(|left, right| {
-        match (
-            semver::Version::parse(&left.version),
-            semver::Version::parse(&right.version),
-        ) {
-            (Ok(left), Ok(right)) => right.cmp(&left),
-            (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-            (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-            (Err(_), Err(_)) => right.id.cmp(&left.id),
-        }
+    // Parse each version once, rather than again for every sort comparison.
+    versions.sort_by_cached_key(|release| {
+        std::cmp::Reverse((semver::Version::parse(&release.version).ok(), release.id))
     });
 }
 

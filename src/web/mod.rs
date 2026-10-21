@@ -198,6 +198,9 @@ pub struct PackageTemplate {
     pub github_repo: Option<String>,
     pub owners: Vec<OwnerInfo>,
     pub versions: Vec<VersionInfo>,
+    pub version_count: usize,
+    pub versions_page: usize,
+    pub versions_pages: usize,
     pub selected_version: Option<VersionInfo>,
     pub release_notice: Option<String>,
     pub installable: bool,
@@ -347,20 +350,27 @@ pub async fn search(
     })
 }
 
+#[derive(Deserialize, Default)]
+pub struct PackagePageParams {
+    versions_page: Option<usize>,
+}
+
 pub async fn package_detail(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
+    Query(params): Query<PackagePageParams>,
 ) -> axum::response::Response {
-    package_page(&state, &headers, name, None).await
+    package_page(&state, &headers, name, None, params).await
 }
 
 pub async fn package_version_detail(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Path((name, version)): axum::extract::Path<(String, String)>,
+    Query(params): Query<PackagePageParams>,
 ) -> axum::response::Response {
-    package_page(&state, &headers, name, Some(version)).await
+    package_page(&state, &headers, name, Some(version), params).await
 }
 
 async fn package_page(
@@ -368,6 +378,7 @@ async fn package_page(
     headers: &axum::http::HeaderMap,
     name: String,
     requested_version: Option<String>,
+    params: PackagePageParams,
 ) -> axum::response::Response {
     let si = get_session_info(state, headers).await;
 
@@ -466,7 +477,16 @@ async fn package_page(
         .as_ref()
         .and_then(|release| release.changelog_html.clone());
 
-    let versions: Vec<VersionInfo> = version_models.iter().map(candidate_info).collect();
+    const VERSIONS_PER_PAGE: usize = 50;
+    let version_count = version_models.len();
+    let versions_pages = version_count.div_ceil(VERSIONS_PER_PAGE).max(1);
+    let versions_page = params.versions_page.unwrap_or(1).clamp(1, versions_pages);
+    let versions = version_models
+        .iter()
+        .skip((versions_page - 1) * VERSIONS_PER_PAGE)
+        .take(VERSIONS_PER_PAGE)
+        .map(candidate_info)
+        .collect();
 
     let deps = if let Some(release) = selected_model.as_ref() {
         dal::deps::list_for_version(&state.db, release.id)
@@ -528,6 +548,9 @@ async fn package_page(
         github_repo,
         owners,
         versions,
+        version_count,
+        versions_page,
+        versions_pages,
         selected_version,
         release_notice,
         installable,
