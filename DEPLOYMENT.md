@@ -286,6 +286,62 @@ corrupt it. If you need horizontal scale, use Path D.
 
 ---
 
+## Upgrading
+
+The new binary runs pending migrations when it starts. Migrations are additive.
+
+**There is no downgrade after a migration.** An older binary refuses to start
+against a database that has migrations it does not know (`Migration file of
+version '…' is missing`). To roll back, restore the database to a point before
+the upgrade (see [Backup & recovery](#backup--recovery-litestream)) and deploy
+the older image. So before every upgrade, record two values:
+
+```bash
+date -u +%Y-%m-%dT%H:%M:%SZ        # restore point
+fly releases -a sema-pkg --image   # image of the current release
+```
+
+**Steps on Fly.io (Path A):**
+
+1. Record the restore point and the current image (above).
+2. `fly deploy`
+3. `fly ssh console -C "sema-pkg doctor"`
+4. Run the upgrade steps for this version (below), if any.
+5. Open a few package pages and check the logs (`fly logs`).
+
+On Path B, run the same `sema-pkg` commands with
+`docker compose -f docker-compose.prod.yml exec registry sema-pkg …`; on Path C,
+run `sema-pkg …` with the service's environment.
+
+### Upgrade steps by version
+
+**Release pages and API references** (adds migrations `m010_release_metadata`,
+`m010_audit_action_order`, `m011_api_docs`, `m011_version_blob_index`; first
+deployed 2026-11-15). Releases published before this upgrade have no stored
+README, CHANGELOG, or API reference. After the deploy, run once:
+
+```bash
+fly ssh console -C "sema-pkg package backfill-readmes"
+fly ssh console -C "sema-pkg package backfill-api-docs"
+```
+
+- `backfill-readmes` reads each stored upload archive, verifies its SHA-256,
+  and stores that release's README and CHANGELOG. Running it again rewrites the
+  same documents.
+- `backfill-api-docs` generates the API reference for stored uploads and skips
+  releases that already have one. It does nothing when `API_DOCS_ENABLED=false`.
+- GitHub-linked releases have no stored archive, so both commands skip them.
+- Until a release has its own README, the package page shows the package-level
+  README for the default release, which is what pages showed before this
+  upgrade.
+
+**Release documents come from the published archive.** After this upgrade, a
+package page shows the README and CHANGELOG captured when that version was
+published. Editing a README in the package's source repository changes the
+registry page only after a new version is published.
+
+---
+
 ## Admin CLI
 
 `sema-pkg <command>` runs management tasks directly against `DATABASE_URL` —
@@ -318,6 +374,13 @@ sema-pkg admin revoke-tokens <username>      # invalidate all their API tokens
 ```bash
 sema-pkg package yank <name> <version>       # hide a version (stays downloadable by lockfile)
 sema-pkg package remove <name>               # delete a package + all versions, reclaim blobs
+```
+
+**Release documentation** (see [Upgrading](#upgrading)):
+
+```bash
+sema-pkg package backfill-readmes            # store each upload release's README + CHANGELOG
+sema-pkg package backfill-api-docs           # generate missing API references
 ```
 
 **Diagnostics:**
