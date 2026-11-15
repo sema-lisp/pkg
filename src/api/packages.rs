@@ -215,13 +215,15 @@ pub async fn publish(
         .map_err(|e| ApiError::internal(format!("Failed to store tarball: {e}")))?;
 
     let api_document = if state.config.api_docs_enabled {
-        Some(
-            tokio::task::spawn_blocking(move || crate::api_docs::capture(&tarball))
-                .await
-                .map_err(|error| {
-                    ApiError::internal(format!("API documentation worker failed: {error}"))
-                })?,
-        )
+        // Documentation is optional: a failed worker leaves the release without
+        // a document, which `sema-pkg package backfill-api-docs` can generate later.
+        match tokio::task::spawn_blocking(move || crate::api_docs::capture(&tarball)).await {
+            Ok(document) => Some(document),
+            Err(error) => {
+                tracing::warn!("API documentation worker failed for {name}@{version_str}: {error}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -268,14 +270,6 @@ pub async fn publish(
     .await
     .map_err(|e| ApiError::internal(format!("Failed to insert version: {e:?}")))?;
 
-    if let Some(document) = api_document {
-        dal::api_docs::insert(&txn, version_model.id, &document)
-            .await
-            .map_err(|error| {
-                ApiError::internal(format!("Failed to store API documentation: {error}"))
-            })?;
-    }
-
     for dep in &metadata.dependencies {
         dal::deps::insert(&txn, version_model.id, &dep.name, &dep.version_req)
             .await
@@ -294,6 +288,15 @@ pub async fn publish(
     txn.commit()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to commit transaction: {e:?}")))?;
+
+    // Stored after the release commits, so a documentation failure never
+    // rejects or rolls back a publish. A missing document is generated later by
+    // `sema-pkg package backfill-api-docs`.
+    if let Some(document) = api_document {
+        if let Err(error) = dal::api_docs::insert(&state.db, version_model.id, &document).await {
+            tracing::warn!("Failed to store API documentation for {name}@{version_str}: {error}");
+        }
+    }
 
     crate::audit::log(
         &state.db,
