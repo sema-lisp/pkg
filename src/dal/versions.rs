@@ -374,9 +374,93 @@ pub async fn yank<C: ConnectionTrait>(
     Ok(result.rows_affected)
 }
 
+/// When per-release README capture started: the time `m010_release_metadata`
+/// was applied. A release published before this has a `NULL` README because
+/// it was never captured, not because its archive had none.
+pub async fn release_docs_since<C: ConnectionTrait>(db: &C) -> Option<String> {
+    let row = db
+        .query_one(crate::db::stmt(
+            db.get_database_backend(),
+            "SELECT applied_at FROM seaql_migrations WHERE version = ?",
+            ["m010_release_metadata".into()],
+        ))
+        .await
+        .ok()??;
+    crate::db::row_get_i64(&row, "applied_at").and_then(time::from_unix)
+}
+
+/// The README to show for `release`.
+///
+/// A release uses its own captured README. Only the package's default release
+/// falls back to the package-level README, and only when it was published
+/// before release capture started (`docs_since`): that README is what the
+/// package page showed before per-release documents existed. Other releases,
+/// and every release published later, never fall back, so a release without a
+/// README is not labelled with another release's document.
+pub fn readme_for_release(
+    release_readme: Option<String>,
+    release_id: i64,
+    release_published_at: &str,
+    default_release_id: Option<i64>,
+    package_readme: Option<&str>,
+    docs_since: Option<&str>,
+) -> Option<String> {
+    if release_readme.is_some() {
+        return release_readme;
+    }
+    let is_default = default_release_id == Some(release_id);
+    let predates_capture = docs_since.is_some_and(|since| release_published_at < since);
+    if is_default && predates_capture {
+        package_readme.map(str::to_owned)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SINCE: &str = "2026-11-16 10:00:00";
+    const BEFORE: &str = "2026-11-01 09:00:00";
+    const AFTER: &str = "2026-11-17 09:00:00";
+
+    #[test]
+    fn readme_for_release_prefers_the_release_document() {
+        let readme = readme_for_release(
+            Some("release".into()),
+            1,
+            BEFORE,
+            Some(1),
+            Some("package"),
+            Some(SINCE),
+        );
+        assert_eq!(readme.as_deref(), Some("release"));
+    }
+
+    #[test]
+    fn readme_for_release_falls_back_for_an_uncaptured_default_release() {
+        let readme = readme_for_release(None, 1, BEFORE, Some(1), Some("package"), Some(SINCE));
+        assert_eq!(readme.as_deref(), Some("package"));
+    }
+
+    #[test]
+    fn readme_for_release_does_not_fall_back_for_a_release_published_after_capture() {
+        let readme = readme_for_release(None, 1, AFTER, Some(1), Some("package"), Some(SINCE));
+        assert_eq!(readme, None);
+    }
+
+    #[test]
+    fn readme_for_release_does_not_fall_back_for_an_older_non_default_release() {
+        let readme = readme_for_release(None, 2, BEFORE, Some(1), Some("package"), Some(SINCE));
+        assert_eq!(readme, None);
+    }
+
+    #[test]
+    fn readme_for_release_does_not_fall_back_without_a_capture_time() {
+        let readme = readme_for_release(None, 1, BEFORE, Some(1), Some("package"), None);
+        assert_eq!(readme, None);
+    }
 
     fn candidate(id: i64, version: &str, yanked: bool) -> ReleaseCandidate {
         ReleaseCandidate {

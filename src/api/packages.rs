@@ -351,11 +351,21 @@ pub async fn get_package(
         .collect();
 
     let readme_html = match dal::versions::default_release_candidate(&versions) {
-        Some(release) => dal::versions::find_by_id(&state.db, release.version.id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|release| release.readme_html),
+        Some(default) => {
+            let release_readme = dal::versions::find_by_id(&state.db, default.version.id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|release| release.readme_html);
+            dal::versions::readme_for_release(
+                release_readme,
+                default.version.id,
+                &default.version.published_at,
+                Some(default.version.id),
+                pkg.readme_html.as_deref(),
+                state.release_docs_since.as_deref(),
+            )
+        }
         None => None,
     };
 

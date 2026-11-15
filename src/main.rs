@@ -45,6 +45,7 @@ async fn main() {
         sema_pkg::telemetry::spawn_collectors(db.clone());
     }
 
+    let release_docs_since = sema_pkg::dal::versions::release_docs_since(&db).await;
     let state = Arc::new(AppState {
         db,
         config,
@@ -53,6 +54,7 @@ async fn main() {
         stats_cache: Default::default(),
         sitemap_cache: Default::default(),
         recent_feed_cache: Default::default(),
+        release_docs_since,
     });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 
