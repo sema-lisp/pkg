@@ -51,6 +51,8 @@ pub struct AppState {
     /// When per-release README capture started; see
     /// [`dal::versions::release_docs_since`].
     pub release_docs_since: Option<String>,
+    /// Highlighted package source for the API reference source pages.
+    pub source_highlight_cache: web::api_docs::SourceHighlightCache,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
