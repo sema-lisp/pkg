@@ -10,6 +10,7 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
+                    .if_not_exists()
                     .name("idx_versions_blob_key")
                     .table(Alias::new("package_versions"))
                     .col(Alias::new("blob_key"))

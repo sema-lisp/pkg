@@ -84,4 +84,33 @@ mod tests {
                 .unwrap());
         }
     }
+
+    /// SQLite DDL is not transactional, so a crash after an index is built but
+    /// before `seaql_migrations` records it leaves the index without its row.
+    /// The next startup must re-run the migration without failing on boot.
+    #[tokio::test]
+    async fn index_migrations_rerun_after_an_unrecorded_apply() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db.execute(crate::db::stmt(
+            db.get_database_backend(),
+            "DELETE FROM seaql_migrations WHERE version IN (?, ?)",
+            [
+                "m010_audit_action_order".into(),
+                "m011_version_blob_index".into(),
+            ],
+        ))
+        .await
+        .unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let manager = SchemaManager::new(&db);
+        assert!(manager
+            .has_index("audit_log", "idx_audit_log_action_order")
+            .await
+            .unwrap());
+        assert!(manager
+            .has_index("package_versions", "idx_versions_blob_key")
+            .await
+            .unwrap());
+    }
 }

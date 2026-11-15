@@ -10,6 +10,7 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
+                    .if_not_exists()
                     .name("idx_audit_log_action_order")
                     .table(Alias::new("audit_log"))
                     .col(Alias::new("action"))
