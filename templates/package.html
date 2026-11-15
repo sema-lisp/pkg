@@ -52,6 +52,12 @@
     line-height: 1.6;
   }
 
+  .sidebar-versions { font-size: 0.72rem; }
+
+  /* Same gap below the last row separator as inside each row
+     (.data-table td padding), so the link does not touch the border. */
+  .sidebar-versions + .sidebar-link { margin-top: 0.65rem; }
+
   /* Rendered-README styles live in static/style.css (.readme …) so they can be
      tweaked without recompiling this template. */
 
@@ -304,7 +310,7 @@
 
       <section>
         <div class="section-label">Versions</div>
-        <table class="data-table" style="font-size:0.72rem;">
+        <table class="data-table sidebar-versions">
           {% for v in versions.iter().take(5) %}
           <tr>
             <td{% if let Some(selected) = selected_version %}{% if selected.version == v.version %} style="color:var(--gold);"{% endif %}{% endif %}>{{ v.version }}</td>
