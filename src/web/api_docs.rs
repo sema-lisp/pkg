@@ -8,7 +8,106 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+/// Total highlighted HTML kept by [`SourceHighlightCache`]. A 512 KiB source
+/// highlights to a few MiB, so this holds the most-viewed large sources while
+/// staying small on a 1 GB machine.
+const SOURCE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Highlighted source lines keyed by the source's SHA-256.
+///
+/// Highlighting a large source costs about 120 ms of CPU, and source pages are
+/// not rate limited. A release's source never changes, so an entry never goes
+/// stale; the cache is bounded by total bytes and evicts the least recently
+/// used entry.
+#[derive(Clone, Default)]
+pub struct SourceHighlightCache {
+    inner: Arc<Mutex<HighlightEntries>>,
+}
+
+#[derive(Default)]
+struct HighlightEntries {
+    entries: HashMap<String, CachedSource>,
+    bytes: usize,
+    clock: u64,
+}
+
+struct CachedSource {
+    lines: Arc<Vec<String>>,
+    bytes: usize,
+    used: u64,
+}
+
+impl SourceHighlightCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HighlightEntries> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, sha256: &str) -> Option<Arc<Vec<String>>> {
+        let mut cache = self.lock();
+        cache.clock += 1;
+        let now = cache.clock;
+        cache.entries.get_mut(sha256).map(|entry| {
+            entry.used = now;
+            entry.lines.clone()
+        })
+    }
+
+    fn insert(&self, sha256: String, lines: Arc<Vec<String>>) {
+        let bytes: usize = lines.iter().map(String::len).sum();
+        if bytes > SOURCE_CACHE_BYTES / 2 {
+            return;
+        }
+        let mut cache = self.lock();
+        if cache.entries.contains_key(&sha256) {
+            return;
+        }
+        while cache.bytes + bytes > SOURCE_CACHE_BYTES {
+            let Some(oldest) = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(evicted) = cache.entries.remove(&oldest) {
+                cache.bytes -= evicted.bytes;
+            }
+        }
+        cache.clock += 1;
+        let used = cache.clock;
+        cache.bytes += bytes;
+        cache
+            .entries
+            .insert(sha256, CachedSource { lines, bytes, used });
+    }
+
+    /// The highlighted lines of `text`, computed on a blocking thread on a miss.
+    pub async fn highlighted(&self, sha256: &str, text: &str) -> Arc<Vec<String>> {
+        if let Some(lines) = self.get(sha256) {
+            return lines;
+        }
+        let source = text.to_owned();
+        let lines = match tokio::task::spawn_blocking(move || {
+            crate::github_sync::highlight_source(&source)
+        })
+        .await
+        {
+            Ok(lines) => Arc::new(lines),
+            // Highlighting is presentation only: show escaped text instead.
+            Err(_) => return Arc::new(text.lines().map(crate::syndication::xml::escape).collect()),
+        };
+        self.insert(sha256.to_owned(), lines.clone());
+        lines
+    }
+}
 
 #[derive(Clone)]
 struct EntryView {
@@ -301,12 +400,15 @@ pub async fn source(
         return StatusCode::NOT_FOUND.into_response();
     };
     let session = super::get_session_info(&state, &headers).await;
-    let lines = crate::github_sync::highlight_source(&source.text)
-        .into_iter()
+    let lines = state
+        .source_highlight_cache
+        .highlighted(&source.sha256, &source.text)
+        .await
+        .iter()
         .enumerate()
         .map(|(index, html)| SourceLine {
             number: index + 1,
-            html,
+            html: html.clone(),
         })
         .collect();
     super::render(SourceTemplate {
@@ -418,5 +520,58 @@ mod tests {
         );
         assert_eq!(definition_source(source, 0, 5), "");
         assert_eq!(definition_source(source, 5, 2), "");
+    }
+}
+
+#[cfg(test)]
+mod source_cache_tests {
+    use super::*;
+
+    fn lines(bytes: usize) -> Arc<Vec<String>> {
+        Arc::new(vec!["x".repeat(bytes)])
+    }
+
+    #[test]
+    fn hit_returns_the_stored_lines() {
+        let cache = SourceHighlightCache::default();
+        let stored = lines(10);
+        cache.insert("a".into(), stored.clone());
+        assert!(Arc::ptr_eq(&cache.get("a").unwrap(), &stored));
+        assert!(cache.get("b").is_none());
+    }
+
+    #[test]
+    fn eviction_keeps_the_total_under_the_cap_and_drops_the_least_recent() {
+        let cache = SourceHighlightCache::default();
+        let third = SOURCE_CACHE_BYTES / 3;
+        cache.insert("a".into(), lines(third));
+        cache.insert("b".into(), lines(third));
+        cache.get("a");
+        cache.insert("c".into(), lines(third));
+        cache.insert("d".into(), lines(third));
+        assert!(cache.lock().bytes <= SOURCE_CACHE_BYTES);
+        assert!(cache.get("a").is_some(), "recently used entry was evicted");
+        assert!(
+            cache.get("b").is_none(),
+            "least recently used entry was kept"
+        );
+        assert!(cache.get("d").is_some());
+    }
+
+    #[test]
+    fn an_entry_over_half_the_cap_is_not_stored() {
+        let cache = SourceHighlightCache::default();
+        cache.insert("big".into(), lines(SOURCE_CACHE_BYTES / 2 + 1));
+        assert!(cache.get("big").is_none());
+        assert_eq!(cache.lock().bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn highlighted_computes_once_and_escapes_text() {
+        let cache = SourceHighlightCache::default();
+        let first = cache.highlighted("sha", "(define x \"<b>\")\n").await;
+        assert!(first[0].contains("&lt;b&gt;"), "{}", first[0]);
+        let second = cache.highlighted("sha", "ignored on a hit").await;
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

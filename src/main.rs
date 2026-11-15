@@ -55,6 +55,7 @@ async fn main() {
         sitemap_cache: Default::default(),
         recent_feed_cache: Default::default(),
         release_docs_since,
+        source_highlight_cache: Default::default(),
     });
     let addr = format!("{}:{}", state.config.host, state.config.port);
 

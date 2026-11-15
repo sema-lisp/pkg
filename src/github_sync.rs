@@ -570,15 +570,20 @@ pub fn highlight_source(source: &str) -> Vec<String> {
     let syntax = set
         .find_syntax_by_name("Sema")
         .unwrap_or_else(|| set.find_syntax_plain_text());
-    let mut theme = sema_theme();
-    // Source viewers need readable punctuation and comments across long files.
-    for scope in &mut theme.scopes {
-        if matches!(scope.style.foreground, Some(color) if color == hex_color("#6b6354") || color == hex_color("#6a6258"))
-        {
-            scope.style.foreground = Some(hex_color("#a39a89"));
+    static SOURCE_THEME: std::sync::OnceLock<syntect::highlighting::Theme> =
+        std::sync::OnceLock::new();
+    let theme = SOURCE_THEME.get_or_init(|| {
+        let mut theme = sema_theme();
+        // Source viewers need readable punctuation and comments across long files.
+        for scope in &mut theme.scopes {
+            if matches!(scope.style.foreground, Some(color) if color == hex_color("#6b6354") || color == hex_color("#6a6258"))
+            {
+                scope.style.foreground = Some(hex_color("#a39a89"));
+            }
         }
-    }
-    let mut highlighter = HighlightLines::new(syntax, &theme);
+        theme
+    });
+    let mut highlighter = HighlightLines::new(syntax, theme);
     LinesWithEndings::from(source)
         .map(|line| {
             highlighter
