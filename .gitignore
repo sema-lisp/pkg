@@ -7,3 +7,6 @@
 # @sema/ui bundle build (the committed outputs are static/sema-ui.js + fonts;
 # node_modules holds the toolchain, rebuilt via `npm ci` / `npm run build:ui`).
 /node_modules
+
+# Local design review captures (also produced by the API docs browser test).
+/.impeccable/review/

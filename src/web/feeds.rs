@@ -69,7 +69,7 @@ struct AtomFeedTemplate {
 /// version-scoped (`urn:sema-pkg:{name}:{version}`) so a new release of an
 /// existing package surfaces as a fresh entry in the recent feed.
 fn item_from_row(base: &str, row: ListingRow) -> FeedItem {
-    let (name, description, version, published_at) = row;
+    let (_, name, description, version, published_at) = row;
     let title = if version.is_empty() {
         name.clone()
     } else {
@@ -77,7 +77,11 @@ fn item_from_row(base: &str, row: ListingRow) -> FeedItem {
     };
     FeedItem {
         title: xml::escape(&title),
-        link: xml::escape(&format!("{base}/packages/{}", url::seg(&name))),
+        link: xml::escape(&format!(
+            "{base}/packages/{}/{}",
+            url::seg(&name),
+            url::seg(&version)
+        )),
         id: xml::escape(&format!("urn:sema-pkg:{name}:{version}")),
         summary: xml::escape(&description),
         date_rss: dates::to_rfc2822(&published_at),
@@ -142,7 +146,7 @@ impl RecentFeedCache {
             }
         }
         let base = state.config.site_url();
-        let rows = dal::packages::recent(&state.db, RECENT_LIMIT).await;
+        let rows = dal::packages::recent_releases(&state.db, RECENT_LIMIT).await;
         let rss = render_rss(make_feed(
             base,
             "/feed/recent.xml",

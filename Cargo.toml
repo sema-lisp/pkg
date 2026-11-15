@@ -42,6 +42,9 @@ syntect = "5.3"
 # Decode uploaded package tarballs to extract the README for the package page.
 flate2 = "1"
 tar = "0.4"
+sema-reader = "=1.37.0"
+sema-core = "=1.37.0"
+thiserror = "2"
 async-trait = "0.1"
 # IP-keyed request rate limiting (GCRA). `axum` for ConnectInfo fallback in the
 # key extractor; drop the default `tonic`/gRPC feature we don't use.

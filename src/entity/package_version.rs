@@ -13,6 +13,10 @@ pub struct Model {
     pub yanked: i32,
     pub sema_version_req: Option<String>,
     pub tarball_url: Option<String>,
+    pub readme_raw: Option<String>,
+    pub readme_html: Option<String>,
+    pub changelog_raw: Option<String>,
+    pub changelog_html: Option<String>,
     pub published_at: String,
 }
 

@@ -5,8 +5,8 @@
 <meta property="og:url" content="{{ base_url }}/search">
 {% endblock %}
 {% block header_center %}
-<form action="/search" method="get" class="search-bar" style="max-width:22rem;">
-  <input type="text" name="q" class="search-input" aria-label="Search packages" placeholder="Search packages…" value="{{ query }}" data-testid="header-search">
+<form action="/search" method="get" class="search-bar package-search">
+  <input type="text" name="q" class="search-input" aria-label="Search packages" placeholder="Search packages..." value="{{ query }}" data-testid="header-search">
   <button type="submit" class="search-btn">Search</button>
 </form>
 {% endblock %}

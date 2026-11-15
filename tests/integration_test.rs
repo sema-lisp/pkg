@@ -8,6 +8,295 @@ use tower::ServiceExt;
 mod common;
 use common::*;
 
+async fn assert_audit_entry(app: &axum::Router, session: &str, expected: serde_json::Value) {
+    let action = expected["action"].as_str().unwrap();
+    let res = get_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/audit?action={action}"),
+        session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    let entries = body["entries"].as_array().unwrap();
+    assert!(
+        entries.iter().any(|entry| expected
+            .as_object()
+            .unwrap()
+            .iter()
+            .all(|(key, value)| &entry[key] == value)),
+        "Missing audit entry {expected} in {body}"
+    );
+}
+
+// ── Package API Documentation ──
+
+#[tokio::test]
+async fn api_reference_formats_use_the_same_stored_release() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "apidocpub", "apidocpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "api-docs").await;
+    let response = publish_package_full(
+        app.clone(),
+        &token,
+        "sema-retry",
+        "0.1.0",
+        include_bytes!("fixtures/sema-retry-0.1.0.tar.gz"),
+        r#"{"description":"Retry with exponential backoff"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let package = sema_pkg::dal::packages::find_by_name(&state.db, "sema-retry")
+        .await
+        .unwrap()
+        .unwrap();
+    let version = sema_pkg::dal::versions::list_candidates_for_package(&state.db, package.id)
+        .await
+        .remove(0);
+    let document = sema_pkg::dal::api_docs::find(&state.db, version.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.entries.len(), 9);
+    for (suffix, content_type) in [
+        ("api", "text/html"),
+        ("api/print", "text/html"),
+        ("api.md", "text/markdown"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/sema-retry/0.1.0/{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with(content_type));
+        let body = body_string(response).await;
+        for entry in &document.entries {
+            assert!(body.contains(&entry.name), "{suffix}: {}", entry.name);
+        }
+        if suffix == "api" {
+            assert!(body.contains("<var>thunk</var>"));
+            assert!(body.contains("site-header"));
+            assert!(body.contains("Breadcrumb"));
+            assert!(body.contains("color:#"));
+        } else if suffix == "api/print" {
+            assert!(!body.contains("<script"));
+            assert!(!body.contains("<link"));
+            assert!(!body.contains("<img"));
+            assert!(body.contains("<style>"));
+        } else {
+            assert!(body.contains("```sema\n(retry/with-retry thunk . opts)"));
+        }
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/sema-retry/0.1.0/source/package.sema")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(html.contains("id=\"L73\""));
+    assert!(html.contains("color:#"));
+    for path in [
+        "/packages/sema-retry/9.9.9/api",
+        "/packages/sema-retry/0.1.0/source/unknown.sema",
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    package_version::Entity::delete_by_id(version.id)
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert!(sema_pkg::dal::api_docs::find(&state.db, version.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn api_reference_escapes_source_and_stays_version_specific() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "docescape", "docescape@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    for (version, source) in [
+        (
+            "1.0.0",
+            "(module test (export old) (define (old x) \"<script>alert(1)</script>\" x))",
+        ),
+        (
+            "2.0.0",
+            "(module test (export new) (define (new x y) \"New declaration\" y))",
+        ),
+    ] {
+        let bytes = tar_gz(&[
+            ("sema.toml", "[package]\nentrypoint='package.sema'"),
+            ("package.sema", source),
+        ]);
+        assert_eq!(
+            publish_package_full(app.clone(), &token, "api-versions", version, &bytes, "{}")
+                .await
+                .status(),
+            StatusCode::CREATED
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-versions/1.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(response).await;
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!html.contains("<script>alert"));
+    assert!(!html.contains("New declaration"));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-versions/2.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_string(response).await.contains("New declaration"));
+}
+
+#[tokio::test]
+async fn api_reference_backfill_is_idempotent_and_verifies_archive_digest() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "docbackfill", "docbackfill@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    assert_eq!(
+        publish_package_full(
+            app.clone(),
+            &token,
+            "api-backfill",
+            "1.0.0",
+            include_bytes!("fixtures/sema-retry-0.1.0.tar.gz"),
+            "{}"
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    use sema_pkg::entity::package_api_doc;
+    package_api_doc::Entity::delete_many()
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (1, 0)
+    );
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (0, 1)
+    );
+    package_api_doc::Entity::delete_many()
+        .exec(&state.db)
+        .await
+        .unwrap();
+    package_version::Entity::update_many()
+        .col_expr(
+            package_version::Column::ChecksumSha256,
+            sea_orm::sea_query::Expr::value("incorrect"),
+        )
+        .exec(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        sema_pkg::api_docs::backfill(&state.db, &state.blobs)
+            .await
+            .unwrap(),
+        (0, 1)
+    );
+    assert_eq!(
+        package_api_doc::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn api_reference_diagnostic_does_not_block_publish_and_flag_disables_routes() {
+    let (app, mut state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "docmissing", "docmissing@example.com").await;
+    let token = create_api_token(app.clone(), &session, "docs").await;
+    assert_eq!(
+        publish_package(
+            app.clone(),
+            &token,
+            "api-missing",
+            "1.0.0",
+            b"not a source archive"
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/api-missing/1.0.0/api")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_string(response).await.contains("api-docs-notice"));
+    drop(app);
+    std::sync::Arc::get_mut(&mut state)
+        .unwrap()
+        .config
+        .api_docs_enabled = false;
+    let app = sema_pkg::build_router(state);
+    for suffix in ["api", "api/print", "api.md", "source/package.sema"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/api-missing/1.0.0/{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
+
 // ── Auth Tests ──
 
 #[tokio::test]
@@ -610,8 +899,8 @@ async fn test_download_package() {
 
 #[tokio::test]
 async fn test_yank_package() {
-    let (app, _dir) = test_app().await;
-    let session = register_user(app.clone(), "yankuser", "yank@example.com").await;
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "yankuser", "yank@example.com").await;
     let token = create_api_token(app.clone(), &session, "yank-token").await;
 
     publish_package(app.clone(), &token, "yank-pkg", "1.0.0", b"data").await;
@@ -630,6 +919,10 @@ async fn test_yank_package() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+
+    assert_audit_entry(&app, &session, serde_json::json!({
+        "action": "yank", "actor": "yankuser", "target_type": "version", "target_name": "yank-pkg", "detail": "1.0.0"
+    })).await;
 
     // Download should fail for yanked
     let res = app
@@ -676,8 +969,8 @@ async fn test_search_api() {
 
 #[tokio::test]
 async fn test_add_and_remove_owner() {
-    let (app, _dir) = test_app().await;
-    let session1 = register_user(app.clone(), "origowner", "oo@example.com").await;
+    let (app, state, _dir) = test_app_with_state().await;
+    let session1 = register_admin(app.clone(), &state, "origowner", "oo@example.com").await;
     let token1 = create_api_token(app.clone(), &session1, "oo-token").await;
     register_user(app.clone(), "newowner", "no@example.com").await;
 
@@ -732,6 +1025,12 @@ async fn test_add_and_remove_owner() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+
+    for action in ["add_owner", "remove_owner"] {
+        assert_audit_entry(&app, &session1, serde_json::json!({
+            "action": action, "actor": "origowner", "target_type": "package", "target_name": "shared-pkg", "detail": "newowner"
+        })).await;
+    }
 
     // Cannot remove last owner
     let res = app
@@ -831,6 +1130,259 @@ async fn test_web_package_not_found() {
         .oneshot(
             Request::builder()
                 .uri("/packages/nonexistent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_release_page_uses_semver_default_and_release_specific_metadata() {
+    let (app, _state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "releasepub", "releasepub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "release-token").await;
+
+    let newest = serde_json::json!({
+        "description": "versioned package",
+        "sema_version_req": ">=1.34.0",
+        "dependencies": [{"name": "new-dependency", "version_req": "^2.0"}],
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "release-page-pkg",
+        "2.0.0",
+        &tar_gz(&[
+            ("README.md", "# Release two\n\nThe current API."),
+            ("CHANGELOG.md", "# 2.0.0\n\nBreaking change."),
+        ]),
+        &newest.to_string(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let backport = serde_json::json!({
+        "description": "versioned package",
+        "dependencies": [{"name": "old-dependency", "version_req": "^1.0"}],
+    });
+    let res = publish_package_full(
+        app.clone(),
+        &token,
+        "release-page-pkg",
+        "1.5.0",
+        &tar_gz(&[("README.md", "# Release one\n\nThe old API.")]),
+        &backport.to_string(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/release-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("Release two"));
+    assert!(html.contains("Breaking change"));
+    assert!(html.contains("sema pkg add release-page-pkg@2.0.0"));
+    assert!(html.contains("new-dependency"));
+    assert!(!html.contains("old-dependency"));
+    assert!(html.contains("/packages/release-page-pkg/1.5.0"));
+
+    let api = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/release-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api.status(), StatusCode::OK);
+    let api = body_json(api).await;
+    assert!(api["package"]["readme_html"]
+        .as_str()
+        .is_some_and(|readme| readme.contains("Release two")));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/release-page-pkg/1.5.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("Release one"));
+    assert!(!html.contains("Release two"));
+    assert!(html.contains("old-dependency"));
+    assert!(!html.contains("new-dependency"));
+    assert!(html.contains("No changelog available for this release"));
+}
+
+#[tokio::test]
+async fn test_release_page_marks_all_yanked_releases_not_installable() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_user(app.clone(), "yankedpub", "yankedpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "yanked-token").await;
+    for version in ["1.0.0", "2.0.0"] {
+        let res = publish_package(
+            app.clone(),
+            &token,
+            "all-yanked-page-pkg",
+            version,
+            b"release",
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+    let package = package::Entity::find()
+        .filter(package::Column::Name.eq("all-yanked-page-pkg"))
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    package_version::Entity::update_many()
+        .col_expr(
+            package_version::Column::Yanked,
+            sea_orm::sea_query::Expr::value(1i32),
+        )
+        .filter(package_version::Column::PackageId.eq(package.id))
+        .exec(&state.db)
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/all-yanked-page-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("All published releases are yanked"));
+    assert!(html.contains("No installable release"));
+    assert!(!html.contains("sema pkg add all-yanked-page-pkg@"));
+}
+
+#[tokio::test]
+async fn test_recent_feed_announces_a_new_backport_at_its_release_url() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "feedpub", "feedpub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "feed-token").await;
+    for version in ["2.0.0", "1.5.0"] {
+        let res =
+            publish_package(app.clone(), &token, "release-feed-pkg", version, b"release").await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/feed/recent.xml")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let xml = body_string(response).await;
+    assert!(xml.contains("release-feed-pkg 1.5.0"));
+    assert!(xml.contains("/packages/release-feed-pkg/1.5.0"));
+    assert!(xml.contains("urn:sema-pkg:release-feed-pkg:1.5.0"));
+}
+
+#[tokio::test]
+async fn test_publish_stores_a_release_readme_larger_than_mysql_text() {
+    let (app, _dir) = test_app().await;
+    let session = register_user(app.clone(), "largepub", "largepub@example.com").await;
+    let token = create_api_token(app.clone(), &session, "large-token").await;
+    let readme = format!("# Large release\n\n{}", "x".repeat(70 * 1024));
+    let response = publish_package_full(
+        app.clone(),
+        &token,
+        "large-release-doc-pkg",
+        "1.0.0",
+        &tar_gz(&[("README.md", readme.as_str())]),
+        r#"{"description":"large release docs"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/packages/large-release-doc-pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let package = body_json(response).await;
+    assert!(package["package"]["readme_html"]
+        .as_str()
+        .is_some_and(|html| html.len() > 65_535));
+}
+
+#[tokio::test]
+async fn test_release_page_is_honest_about_legacy_documentation_and_missing_versions() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let package = package::ActiveModel {
+        name: Set("legacy-page-pkg".into()),
+        description: Set("legacy package".into()),
+        readme_html: Set(Some("<p>Current package README</p>".into())),
+        created_at: Set(sema_pkg::dal::time::now()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+    package_version::ActiveModel {
+        package_id: Set(package.id),
+        version: Set("1.0.0".into()),
+        checksum_sha256: Set(String::new()),
+        blob_key: Set(String::new()),
+        size_bytes: Set(0),
+        published_at: Set(sema_pkg::dal::time::now()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/packages/legacy-page-pkg/1.0.0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res).await;
+    assert!(html.contains("No README available"));
+    assert!(!html.contains("Current package README"));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/legacy-page-pkg/9.9.9")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1535,6 +2087,7 @@ fn test_check_production_secrets_rejects_default_key_with_github() {
         blob_s3_secret_access_key: None,
         max_tarball_bytes: 1024,
         max_dependencies: 64,
+        api_docs_enabled: true,
         rate_limit_enabled: false,
         rate_limit_rps: 20,
         rate_limit_burst: 40,
@@ -2126,6 +2679,9 @@ async fn test_admin_revoke_tokens() {
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
     assert_eq!(body["revoked"], 2);
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "revoke_tokens", "actor": "rt-admin", "target_type": "user", "target_name": "rt-victim", "detail": "revoked 2 tokens"
+    })).await;
 
     // Both tokens should be unusable
     let res = publish_package(app.clone(), &token1, "rt-pkg1", "1.0.0", b"data").await;
@@ -2165,6 +2721,12 @@ async fn test_admin_set_role() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+
+    for detail in ["set role to admin", "set role to user"] {
+        assert_audit_entry(&app, &admin_session, serde_json::json!({
+            "action": "set_role", "actor": "sr-admin", "target_type": "user", "target_name": "sr-user1", "detail": detail
+        })).await;
+    }
 
     // User1 should get 403 on admin endpoints
     let res = get_with_session(app.clone(), "/api/v1/admin/stats", &user_session).await;
@@ -2232,6 +2794,9 @@ async fn test_admin_yank_all() {
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
     assert_eq!(body["yanked"], 3);
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "yank_all", "actor": "ya-admin", "target_type": "package", "target_name": "ya-pkg", "detail": "yanked 3 versions"
+    })).await;
 
     // Downloading any version should return 404
     let res = app
@@ -2276,6 +2841,141 @@ async fn test_admin_remove_package() {
 }
 
 #[tokio::test]
+async fn test_package_removal_preserves_report_audit_context() {
+    for via_cli in [false, true] {
+        let (app, state, _dir) = test_app_with_state().await;
+        let session =
+            register_admin(app.clone(), &state, "removal-admin", "removal@test.com").await;
+        let token = create_api_token(app.clone(), &session, "removal").await;
+        for version in ["1.0.0", "2.0.0"] {
+            let res =
+                publish_package(app.clone(), &token, "reported-pkg", version, b"fixture").await;
+            assert_eq!(res.status(), StatusCode::CREATED);
+        }
+        for reason in ["Misleading package description", "Repeated spam uploads"] {
+            let res = post_json_with_session(app.clone(), "/api/v1/reports", serde_json::json!({
+                "target_type": "package", "target_name": "reported-pkg", "report_type": "spam", "reason": reason
+            }), &session).await;
+            assert_eq!(res.status(), StatusCode::CREATED);
+        }
+        let reports = sema_pkg::entity::report::Entity::find()
+            .all(&state.db)
+            .await
+            .unwrap();
+        let actor = if via_cli {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_sema-pkg"))
+                .args(["package", "remove", "reported-pkg"])
+                .env("DATABASE_URL", &state.config.database_url)
+                .env("BLOB_DIR", &state.config.blob_dir)
+                .env("USER", "audit-test")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            "cli:audit-test"
+        } else {
+            let res =
+                delete_with_session(app.clone(), "/api/v1/admin/packages/reported-pkg", &session)
+                    .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            "removal-admin"
+        };
+        assert!(
+            sema_pkg::dal::packages::find_by_name(&state.db, "reported-pkg")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            sema_pkg::entity::report::Entity::find()
+                .count(&state.db)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_audit_entry(&app, &session, serde_json::json!({
+            "action": "remove_package", "actor": actor, "target_type": "package", "target_name": "reported-pkg", "detail": "Removed 2 versions"
+        })).await;
+        for report in reports {
+            assert_audit_entry(&app, &session, serde_json::json!({
+                "action": "action_report", "actor": actor, "target_type": "report", "target_name": report.id.to_string(),
+                "detail": format!("package reported-pkg · spam · package removed\nReason: {}", report.reason)
+            })).await;
+        }
+        let body = body_json(
+            get_with_session(
+                app.clone(),
+                "/api/v1/admin/audit?q=Repeated%20spam%20uploads",
+                &session,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["entries"][0]["action"], "action_report");
+    }
+}
+
+#[tokio::test]
+async fn test_report_and_removal_roll_back_when_audit_write_fails() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "rollback-admin", "rollback@test.com").await;
+    let token = create_api_token(app.clone(), &session, "rollback").await;
+    publish_package(app.clone(), &token, "keep-pkg", "1.0.0", b"data").await;
+    post_json_with_session(app.clone(), "/api/v1/reports", serde_json::json!({
+        "target_type": "package", "target_name": "keep-pkg", "report_type": "other", "reason": "Keep this context"
+    }), &session).await;
+    let report = sema_pkg::entity::report::Entity::find()
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .db
+        .execute_unprepared("DROP TABLE audit_log")
+        .await
+        .unwrap();
+
+    let res = post_empty_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/reports/{}/dismiss", report.id),
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let saved = sema_pkg::entity::report::Entity::find_by_id(report.id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, "open");
+
+    let res = delete_with_session(app.clone(), "/api/v1/admin/packages/keep-pkg", &session).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(sema_pkg::dal::packages::find_by_name(&state.db, "keep-pkg")
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        package_version::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sema_pkg::entity::report::Entity::find()
+            .count(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn test_admin_transfer_ownership() {
     let (app, state, _dir) = test_app_with_state().await;
     let admin_session = register_admin(app.clone(), &state, "to-admin", "to-admin@test.com").await;
@@ -2297,6 +2997,10 @@ async fn test_admin_transfer_ownership() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["ok"], true);
+
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "transfer_ownership", "actor": "to-admin", "target_type": "package", "target_name": "to-pkg", "detail": "transferred to to-newowner"
+    })).await;
 
     // New owner can publish a new version
     let res = publish_package(app.clone(), &new_owner_token, "to-pkg", "2.0.0", b"data2").await;
@@ -2337,6 +3041,26 @@ async fn test_admin_audit_log() {
         .map(|e| e["action"].as_str().unwrap())
         .collect();
     assert!(actions.contains(&"ban_user"));
+    for (action, actor, target_type, target_name, detail) in [
+        ("register", "al-victim", "user", "al-victim", None),
+        ("publish", "al-victim", "package", "al-pkg", Some("1.0.0")),
+        (
+            "ban_user",
+            "al-admin",
+            "user",
+            "al-victim",
+            Some("audit test"),
+        ),
+    ] {
+        let entry = entries
+            .iter()
+            .find(|e| e["action"] == action && e["actor"] == actor)
+            .unwrap();
+        assert_eq!(entry["target_type"], target_type);
+        assert_eq!(entry["target_name"], target_name);
+        assert_eq!(entry["detail"].as_str(), detail);
+        assert!(!entry["created_at"].as_str().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -2378,6 +3102,113 @@ async fn test_admin_audit_filter() {
     for entry in entries {
         assert_eq!(entry["action"], "ban_user");
     }
+    let res = get_with_session(
+        app.clone(),
+        "/api/v1/admin/audit?action=unban_user",
+        &admin_session,
+    )
+    .await;
+    let body = body_json(res).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["entries"][0]["action"], "unban_user");
+    assert_eq!(body["entries"][0]["actor"], "af-admin");
+    assert_eq!(body["entries"][0]["target_name"], "af-victim");
+}
+
+#[tokio::test]
+async fn test_admin_audit_pagination_is_bounded_and_stable() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "page-admin", "page-admin@test.com").await;
+    state.db.execute_unprepared(
+        "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<501)
+         INSERT INTO audit_log(actor, action, target_type, target_name, detail, created_at)
+         SELECT 'pagination-fixture', 'publish', 'package', 'page-test', '1.0.0', '2026-01-01 12:00:00' FROM seq",
+    ).await.unwrap();
+
+    for filter in [
+        "action=publish",
+        "q=pagination-fixture",
+        "action=publish&q=pagination-fixture",
+    ] {
+        let mut previous_id = i64::MAX;
+        let mut seen = std::collections::HashSet::new();
+        for page in 1..=12 {
+            let res = get_with_session(
+                app.clone(),
+                &format!("/api/v1/admin/audit?{filter}&page={page}"),
+                &session,
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let body = body_json(res).await;
+            assert_eq!(body["total"], 501);
+            assert_eq!(body["per_page"], 50);
+            let entries = body["entries"].as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                match page {
+                    11 => 1,
+                    12 => 0,
+                    _ => 50,
+                }
+            );
+            for entry in entries {
+                let id = entry["id"].as_i64().unwrap();
+                assert!(id < previous_id, "Equal timestamps must order by ID");
+                assert!(seen.insert(id), "Pages must not overlap");
+                previous_id = id;
+            }
+        }
+        assert_eq!(seen.len(), 501);
+    }
+
+    for (requested, expected) in [(-1, 1), (0, 1), (1, 1), (500, 200)] {
+        let res = get_with_session(
+            app.clone(),
+            &format!("/api/v1/admin/audit?action=publish&per_page={requested}"),
+            &session,
+        )
+        .await;
+        let body = body_json(res).await;
+        assert_eq!(body["per_page"], expected);
+        assert_eq!(body["entries"].as_array().unwrap().len(), expected as usize);
+    }
+    let res = get_with_session(
+        app.clone(),
+        "/api/v1/admin/audit?page=9223372036854775807",
+        &session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let plan = state.db.query_all(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "EXPLAIN QUERY PLAN SELECT id, actor, action, target_type, target_name, detail, created_at
+         FROM audit_log WHERE action = 'publish' ORDER BY created_at DESC, id DESC LIMIT 50",
+    )).await.unwrap();
+    let plan = plan
+        .iter()
+        .map(|row| row.try_get::<String>("", "detail").unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plan.contains("idx_audit_log_action_order"), "{plan}");
+    assert!(
+        !plan.contains("TEMP B-TREE"),
+        "Must not sort full history: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_audit_read_failure_is_not_an_empty_log() {
+    let (app, state, _dir) = test_app_with_state().await;
+    let session = register_admin(app.clone(), &state, "fail-admin", "fail-admin@test.com").await;
+    state
+        .db
+        .execute_unprepared("DROP TABLE audit_log")
+        .await
+        .unwrap();
+    let res = get_with_session(app, "/api/v1/admin/audit", &session).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -2453,6 +3284,33 @@ async fn test_admin_reports_lifecycle() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "dismiss_report", "actor": "rl-admin", "target_type": "report", "target_name": report_id.to_string(),
+        "detail": "package suspicious-pkg · spam · dismissed\nReason: This package is spam"
+    })).await;
+    assert_audit_entry(&app, &admin_session, serde_json::json!({
+        "action": "action_report", "actor": "rl-admin", "target_type": "report", "target_name": report_id2.to_string(),
+        "detail": "user bad-actor · abuse · actioned\nReason: Abusive behavior"
+    })).await;
+    // Repeating a resolution must not create another audit entry.
+    let res = post_empty_with_session(
+        app.clone(),
+        &format!("/api/v1/admin/reports/{report_id2}/action"),
+        &admin_session,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body = body_json(
+        get_with_session(
+            app.clone(),
+            "/api/v1/admin/audit?action=action_report",
+            &admin_session,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["total"], 1);
 
     // No more open reports
     let res = get_with_session(app.clone(), "/api/v1/admin/reports", &admin_session).await;
@@ -3116,4 +3974,168 @@ async fn test_429_has_actionable_retry_after() {
         }
     }
     assert!(saw_429, "expected a 429 to inspect");
+}
+
+#[tokio::test]
+async fn test_release_history_pagination_keeps_selected_release_and_bounds_rows() {
+    use sea_orm::{ActiveModelTrait, Set};
+    use sema_pkg::entity::{package, package_version};
+
+    let (app, state, _dir) = test_app_with_state().await;
+    let pkg = package::ActiveModel {
+        name: Set("paged-history".into()),
+        description: Set("Release pagination fixture".into()),
+        created_at: Set("2026-10-21 00:00:00".into()),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .unwrap();
+    for minor in 0..123 {
+        package_version::ActiveModel {
+            package_id: Set(pkg.id),
+            version: Set(format!("1.{minor}.0")),
+            checksum_sha256: Set("test".into()),
+            blob_key: Set("test".into()),
+            size_bytes: Set(1),
+            published_at: Set("2026-10-21 00:00:00".into()),
+            readme_html: Set(Some(format!("<p>Documentation for release {minor}</p>"))),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+    }
+    for (query, page, rows, first) in [
+        ("", 1, 50, 122),
+        ("?versions_page=0", 1, 50, 122),
+        ("?versions_page=2", 2, 50, 72),
+        ("?versions_page=3", 3, 23, 22),
+        ("?versions_page=18446744073709551615", 3, 23, 22),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/packages/paged-history/1.7.0{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        let table = html
+            .split("data-testid=\"versions-table\"")
+            .nth(1)
+            .unwrap()
+            .split("</sema-tab-panel>")
+            .next()
+            .unwrap();
+        assert_eq!(table.matches("<tr>").count(), rows + 1);
+        assert!(table.contains(&format!("Page {page} of 3")));
+        assert!(table.contains(&format!("/packages/paged-history/1.{first}.0")));
+        assert!(html.contains("sema pkg add paged-history@1.7.0"));
+        assert!(html.contains("Documentation for release 7"));
+        assert!(html.contains("View all 123 versions"));
+        assert_eq!(html.matches("<tr>").count(), rows + 6);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/packages/paged-history?versions_page=3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(response).await;
+    assert!(html.contains("sema pkg add paged-history@1.122.0"));
+    assert!(html.contains("Documentation for release 122"));
+}
+
+#[tokio::test]
+async fn test_package_removal_only_returns_distinct_unshared_upload_blobs() {
+    use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseBackend, Set};
+    use sema_pkg::{
+        dal,
+        entity::{package, package_version},
+    };
+    let (_app, state, _dir) = test_app_with_state().await;
+    let mut ids = Vec::new();
+    for name in ["remove-projection", "keep-projection"] {
+        let pkg = package::ActiveModel {
+            name: Set(name.into()),
+            description: Set(String::new()),
+            created_at: Set("2026-10-21 00:00:00".into()),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+        ids.push(pkg.id);
+    }
+    for (index, (package_id, blob_key)) in [
+        (ids[0], "unshared"),
+        (ids[0], "unshared"),
+        (ids[0], "shared"),
+        (ids[0], ""),
+        (ids[1], "shared"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        package_version::ActiveModel {
+            package_id: Set(package_id),
+            version: Set(format!("1.0.{index}")),
+            checksum_sha256: Set("test".into()),
+            blob_key: Set(blob_key.into()),
+            size_bytes: Set(1),
+            published_at: Set("2026-10-21 00:00:00".into()),
+            readme_html: Set(Some("x".repeat(64 * 1024))),
+            ..Default::default()
+        }
+        .insert(&state.db)
+        .await
+        .unwrap();
+    }
+    let keys = dal::packages::delete_by_name(&state.db, "remove-projection", "test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys, ["unshared"]);
+    let keys = dal::packages::delete_by_name(&state.db, "keep-projection", "test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys, ["shared"]);
+    if state.db.get_database_backend() == DatabaseBackend::Sqlite {
+        let plan = state.db.query_all(sema_pkg::db::stmt(DatabaseBackend::Sqlite,
+            "EXPLAIN QUERY PLAN SELECT 1 FROM package_versions WHERE blob_key = ? AND package_id <> ?",
+            ["shared".into(), ids[0].into()])).await.unwrap();
+        let details: Vec<String> = plan
+            .iter()
+            .map(|row| row.try_get("", "detail").unwrap())
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("idx_versions_blob_key")),
+            "{details:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_release_docs_since_reads_the_m010_apply_time() {
+    let (_app, state, _dir) = common::test_app_with_state().await;
+    let since = state
+        .release_docs_since
+        .as_deref()
+        .expect("m010_release_metadata is applied during startup");
+    // `YYYY-MM-DD HH:MM:SS`, the schema's canonical timestamp form, so it
+    // compares lexicographically with `package_versions.published_at`.
+    assert_eq!(since.len(), 19, "unexpected timestamp form: {since}");
+    assert_eq!(&since[4..5], "-");
+    assert_eq!(&since[10..11], " ");
 }

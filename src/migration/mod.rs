@@ -20,6 +20,10 @@ mod m007_perf_indexes;
 // Public so the dev seeder can drop/rebuild the FTS index around a bulk load.
 pub mod m008_search;
 mod m009_download_sum_index;
+mod m010_audit_action_order;
+mod m010_release_metadata;
+mod m011_api_docs;
+mod m011_version_blob_index;
 
 pub struct Migrator;
 
@@ -36,6 +40,77 @@ impl MigratorTrait for Migrator {
             Box::new(m007_perf_indexes::Migration),
             Box::new(m008_search::Migration),
             Box::new(m009_download_sum_index::Migration),
+            Box::new(m010_release_metadata::Migration),
+            Box::new(m010_audit_action_order::Migration),
+            Box::new(m011_version_blob_index::Migration),
+            Box::new(m011_api_docs::Migration),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{ConnectionTrait, Database};
+
+    #[tokio::test]
+    async fn either_feature_migration_can_be_applied_first() {
+        for first in ["m010_release_metadata", "m010_audit_action_order"] {
+            let db = Database::connect("sqlite::memory:").await.unwrap();
+            Migrator::up(&db, Some(9)).await.unwrap();
+            let migration = Migrator::migrations()
+                .into_iter()
+                .find(|migration| migration.name() == first)
+                .unwrap();
+            migration.up(&SchemaManager::new(&db)).await.unwrap();
+            db.execute(crate::db::stmt(
+                db.get_database_backend(),
+                "INSERT INTO seaql_migrations (version, applied_at) VALUES (?, ?)",
+                [first.into(), 0i64.into()],
+            ))
+            .await
+            .unwrap();
+            Migrator::up(&db, None).await.unwrap();
+            // A second startup must not try to add either schema change again.
+            Migrator::up(&db, None).await.unwrap();
+            let manager = SchemaManager::new(&db);
+            assert!(manager
+                .has_column("package_versions", "readme_html")
+                .await
+                .unwrap());
+            assert!(manager
+                .has_index("audit_log", "idx_audit_log_action_order")
+                .await
+                .unwrap());
+        }
+    }
+
+    /// SQLite DDL is not transactional, so a crash after an index is built but
+    /// before `seaql_migrations` records it leaves the index without its row.
+    /// The next startup must re-run the migration without failing on boot.
+    #[tokio::test]
+    async fn index_migrations_rerun_after_an_unrecorded_apply() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db.execute(crate::db::stmt(
+            db.get_database_backend(),
+            "DELETE FROM seaql_migrations WHERE version IN (?, ?)",
+            [
+                "m010_audit_action_order".into(),
+                "m011_version_blob_index".into(),
+            ],
+        ))
+        .await
+        .unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let manager = SchemaManager::new(&db);
+        assert!(manager
+            .has_index("audit_log", "idx_audit_log_action_order")
+            .await
+            .unwrap());
+        assert!(manager
+            .has_index("package_versions", "idx_versions_blob_key")
+            .await
+            .unwrap());
     }
 }

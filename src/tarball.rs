@@ -5,16 +5,26 @@ use std::io::Read;
 /// Largest README we'll store — a guard against a pathological upload.
 const MAX_README_BYTES: usize = 512 * 1024;
 
-/// Extract a package's README from its `.tar.gz`, if present. Prefers the
-/// shallowest `README(.md|.markdown)` (case-insensitive), so the package-root
-/// README wins over any nested one. Returns the raw Markdown; rendering to HTML
-/// is the caller's job. Best-effort: any decode error yields `None`.
-pub fn extract_readme(tarball: &[u8]) -> Option<String> {
+/// Documentation files captured from an uploaded release.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReleaseDocs {
+    pub readme: Option<String>,
+    pub changelog: Option<String>,
+}
+
+/// Extract release documentation from a `.tar.gz`. It prefers shallow files so
+/// the package-root README and changelog win over nested copies. Best-effort:
+/// malformed archives simply produce no documentation.
+pub fn extract_release_docs(tarball: &[u8]) -> ReleaseDocs {
     let gz = flate2::read::GzDecoder::new(tarball);
     let mut archive = tar::Archive::new(gz);
-    let mut best: Option<(usize, String)> = None;
-    for entry in archive.entries().ok()? {
-        let Ok(mut entry) = entry else { continue };
+    let Ok(entries) = archive.entries() else {
+        return ReleaseDocs::default();
+    };
+    let mut readme: Option<(usize, String)> = None;
+    let mut changelog: Option<(usize, String)> = None;
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
         let Ok(path) = entry.path() else { continue };
         let path = path.into_owned();
         let Some(name) = path
@@ -23,19 +33,39 @@ pub fn extract_readme(tarball: &[u8]) -> Option<String> {
         else {
             continue;
         };
-        if name != "readme.md" && name != "readme" && name != "readme.markdown" {
+        let target = if matches!(name.as_str(), "readme.md" | "readme" | "readme.markdown") {
+            &mut readme
+        } else if matches!(
+            name.as_str(),
+            "changelog.md" | "changelog" | "changelog.markdown"
+        ) {
+            &mut changelog
+        } else {
             continue;
-        }
+        };
         let depth = path.components().count();
-        if best.as_ref().is_some_and(|(d, _)| *d <= depth) {
+        if target.as_ref().is_some_and(|(d, _)| *d <= depth) {
             continue;
         }
         let mut buf = Vec::new();
-        if entry.read_to_end(&mut buf).is_ok() && buf.len() <= MAX_README_BYTES {
-            best = Some((depth, String::from_utf8_lossy(&buf).into_owned()));
+        if entry
+            .take((MAX_README_BYTES + 1) as u64)
+            .read_to_end(&mut buf)
+            .is_ok()
+            && buf.len() <= MAX_README_BYTES
+        {
+            *target = Some((depth, String::from_utf8_lossy(&buf).into_owned()));
         }
     }
-    best.map(|(_, content)| content)
+    ReleaseDocs {
+        readme: readme.map(|(_, content)| content),
+        changelog: changelog.map(|(_, content)| content),
+    }
+}
+
+/// Compatibility helper for callers that only need a README.
+pub fn extract_readme(tarball: &[u8]) -> Option<String> {
+    extract_release_docs(tarball).readme
 }
 
 #[cfg(test)]
@@ -78,6 +108,18 @@ mod tests {
     fn none_when_absent() {
         let tgz = make_targz(&[("package.sema", "(module x)")]);
         assert_eq!(extract_readme(&tgz), None);
+    }
+
+    #[test]
+    fn extracts_root_changelog() {
+        let tgz = make_targz(&[
+            ("docs/CHANGELOG.md", "nested"),
+            ("CHANGELOG.md", "# 1.0.0\n\nInitial release"),
+        ]);
+        assert_eq!(
+            extract_release_docs(&tgz).changelog.as_deref(),
+            Some("# 1.0.0\n\nInitial release")
+        );
     }
 
     #[test]

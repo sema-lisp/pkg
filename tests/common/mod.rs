@@ -69,6 +69,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         blob_s3_secret_access_key: std::env::var("BLOB_S3_SECRET_ACCESS_KEY").ok(),
         max_tarball_bytes: 10 * 1024 * 1024,
         max_dependencies: 64,
+        api_docs_enabled: true,
         // Off by default: the suite hammers endpoints via `oneshot` with no peer
         // address, which the limiter's IP key extractor requires. Only the
         // dedicated rate-limit test opts in (and supplies X-Forwarded-For).
@@ -84,6 +85,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
 
     let blobs =
         sema_pkg::blob::BlobStore::from_config(&config).expect("Failed to initialize blob store");
+    let release_docs_since = sema_pkg::dal::versions::release_docs_since(&db).await;
     let state = Arc::new(AppState {
         db,
         config,
@@ -92,6 +94,8 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         stats_cache: Default::default(),
         sitemap_cache: Default::default(),
         recent_feed_cache: Default::default(),
+        release_docs_since,
+        source_highlight_cache: Default::default(),
     });
     let app = build_router(state.clone());
     (app, state, dir)
@@ -219,6 +223,23 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&crc32(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out
+}
+
+/// Build a small valid package archive from text files. Use this for page tests
+/// that need the registry to extract release-specific documentation.
+pub fn tar_gz(files: &[(&str, &str)]) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for (path, content) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, *path, content.as_bytes())
+            .unwrap();
+    }
+    builder.into_inner().unwrap().finish().unwrap()
 }
 
 fn crc32(data: &[u8]) -> u32 {

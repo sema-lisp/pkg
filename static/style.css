@@ -32,6 +32,7 @@
 }
 
 :root {
+  --page-max-width: 64rem;
   --bg: #0c0c0c;
   --bg-raised: #111;
   --bg-code: #0a0a0a;
@@ -75,6 +76,41 @@ body {
 
 a { color: var(--gold); text-decoration: none; transition: opacity 0.15s; }
 a:hover { opacity: 0.8; }
+
+/* Chevron geometry from the main website's CustomPageLayout.vue. */
+.disclosure-summary { display: flex; align-items: center; gap: 0.5rem; list-style: none; }
+.disclosure-summary::marker { content: ""; }
+.disclosure-summary::-webkit-details-marker { display: none; }
+.disclosure-icon { flex: none; transform: rotate(-90deg); }
+details[open] > .disclosure-summary > .disclosure-icon { transform: rotate(0); }
+
+/* Shared by rendered README blocks and API/source scroll containers. */
+:is(.readme pre, .readme table, .api-index, .api-index ul, .api-definition pre, .api-source-code) {
+  --scrollbar-thumb: var(--text);
+  --scrollbar-track: var(--bg-code);
+  color-scheme: dark;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+@supports not (scrollbar-color: auto) {
+  :is(.readme pre, .readme table, .api-index, .api-index ul, .api-definition pre, .api-source-code)::-webkit-scrollbar { width: 6px; height: 6px; }
+  :is(.readme pre, .readme table, .api-index, .api-index ul, .api-definition pre, .api-source-code)::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+  :is(.readme pre, .readme table, .api-index, .api-index ul, .api-definition pre, .api-source-code)::-webkit-scrollbar-track,
+  :is(.readme pre, .readme table, .api-index, .api-index ul, .api-definition pre, .api-source-code)::-webkit-scrollbar-corner { background: var(--scrollbar-track); }
+}
+
+.package-breadcrumbs { display:flex; flex-wrap:wrap; gap:0.6rem; align-items:center; font-size:0.72rem; margin-block-end:1.25rem; }
+.package-breadcrumbs a { color:var(--text); }
+.package-breadcrumbs a[aria-current] { color:var(--text-bright); }
+.package-breadcrumbs a:hover { color:var(--gold); }
+.search-bar.package-search { max-width:22rem; min-width:0; }
+.package-search .search-input { min-width:0; }
+.site-header:has(.package-search) { gap:1rem; }
+@media (max-width:800px) {
+  .site-header:has(.package-search) { flex-wrap:wrap; height:auto; min-height:52px; padding:0.75rem 1rem; }
+  .site-header:has(.package-search) .header-nav { margin-inline-start:auto; flex-wrap:wrap; }
+  .search-bar.package-search { order:1; flex-basis:100%; max-width:none; }
+}
 
 /* ── Header ── */
 .site-header {
@@ -164,7 +200,7 @@ a:hover { opacity: 0.8; }
 .page-content {
   --page-x: 2rem;
   flex: 1;
-  max-width: 64rem;
+  max-width: var(--page-max-width);
   width: 100%;
   margin: 0 auto;
   padding: 2.5rem var(--page-x);

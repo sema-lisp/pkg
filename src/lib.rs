@@ -1,4 +1,5 @@
 pub mod api;
+pub mod api_docs;
 pub mod audit;
 pub mod auth;
 pub mod blob;
@@ -47,6 +48,11 @@ pub struct AppState {
     pub sitemap_cache: web::sitemap::SitemapCache,
     /// TTL cache for the rendered recently-updated feeds (RSS + Atom).
     pub recent_feed_cache: web::feeds::RecentFeedCache,
+    /// When per-release README capture started; see
+    /// [`dal::versions::release_docs_since`].
+    pub release_docs_since: Option<String>,
+    /// Highlighted package source for the API reference source pages.
+    pub source_highlight_cache: web::api_docs::SourceHighlightCache,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -60,6 +66,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Web pages
         .route("/", get(web::index))
         .route("/search", get(web::search))
+        .route(
+            "/packages/{name}/{version}/api",
+            get(web::api_docs::reference),
+        )
+        .route(
+            "/packages/{name}/{version}/api/print",
+            get(web::api_docs::print),
+        )
+        .route(
+            "/packages/{name}/{version}/api.md",
+            get(web::api_docs::markdown),
+        )
+        .route(
+            "/packages/{name}/{version}/source/{*path}",
+            get(web::api_docs::source),
+        )
+        .route(
+            "/packages/{name}/{version}",
+            get(web::package_version_detail),
+        )
         .route("/packages/{name}", get(web::package_detail))
         .route("/login", get(web::login))
         .route("/account", get(web::account))

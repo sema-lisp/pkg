@@ -44,13 +44,9 @@ test.describe('Search and pagination', () => {
   }) => {
     const ts = Date.now();
     // Publish 25 packages to exceed the per_page=20 default
-    const publishes = [];
     for (let i = 0; i < 25; i++) {
-      publishes.push(
-        publishPackage(request, apiToken, `bulk-pkg-${i}-${ts}`, '1.0.0'),
-      );
+      await publishPackage(request, apiToken, `bulk-pkg-${i}-${ts}`, '1.0.0');
     }
-    await Promise.all(publishes);
 
     await authedPage.goto(`/search?q=bulk-pkg`);
     const pagination = authedPage.getByTestId('pagination');
