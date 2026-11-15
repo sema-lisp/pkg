@@ -145,6 +145,9 @@ fn source_from_archive(bytes: &[u8]) -> Result<Source, CaptureError> {
     let decoder = flate2::read::GzDecoder::new(bytes).take(MAX_EXPANDED_BYTES);
     let mut archive = tar::Archive::new(decoder);
     let mut files = BTreeMap::new();
+    // `.sema` files that cannot be documented. Only the entrypoint is
+    // documented, so these only matter if one of them is the entrypoint.
+    let mut skipped: BTreeMap<String, &'static str> = BTreeMap::new();
     let mut paths = BTreeSet::new();
     for (index, entry) in archive.entries()?.enumerate() {
         if index >= MAX_FILES {
@@ -176,14 +179,34 @@ fn source_from_archive(bytes: &[u8]) -> Result<Source, CaptureError> {
         if !(path.ends_with(".sema") || path == "sema.toml" || path.ends_with("/sema.toml")) {
             continue;
         }
+        let is_manifest = !path.ends_with(".sema");
         if entry.size() > MAX_SOURCE_BYTES {
-            return Err(CaptureError::Unsupported(
-                "A source file exceeds the 512 KiB API documentation limit.",
-            ));
+            if is_manifest {
+                return Err(CaptureError::Unsupported(
+                    "The package manifest exceeds the 512 KiB API documentation limit.",
+                ));
+            }
+            skipped.insert(
+                path,
+                "The entrypoint exceeds the 512 KiB API documentation limit.",
+            );
+            continue;
         }
-        let mut text = String::new();
-        entry.read_to_string(&mut text)?;
-        files.insert(path, text);
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                files.insert(path, text);
+            }
+            Err(_) if is_manifest => {
+                return Err(CaptureError::Unsupported(
+                    "The package manifest is not valid UTF-8.",
+                ));
+            }
+            Err(_) => {
+                skipped.insert(path, "The entrypoint is not valid UTF-8.");
+            }
+        }
     }
     if archive.into_inner().limit() == 0 {
         return Err(CaptureError::Unsupported(
@@ -220,6 +243,9 @@ fn source_from_archive(bytes: &[u8]) -> Result<Source, CaptureError> {
     let path = archive_path(&parent.join(relative)).ok_or(CaptureError::Unsupported(
         "The declared entrypoint path is invalid.",
     ))?;
+    if let Some(reason) = skipped.get(&path) {
+        return Err(CaptureError::Unsupported(reason));
+    }
     let text = files.remove(&path).ok_or(CaptureError::Unsupported(
         "The declared .sema entrypoint was not found as a regular file in the archive.",
     ))?;
@@ -411,6 +437,48 @@ mod tests {
                 .unwrap();
         }
         tar.into_inner().unwrap().finish().unwrap()
+    }
+    fn archive_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        for (path, bytes) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            tar.append_data(&mut header, path, *bytes).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+    const DOCUMENTED: &str = "(module api (export f) (define (f x) \"doc\" x))";
+    #[test]
+    fn unreadable_non_entrypoint_files_are_skipped() {
+        let oversized = vec![b' '; MAX_SOURCE_BYTES as usize + 1];
+        let document = capture(&archive_bytes(&[
+            ("sema.toml", b"[package]\nentrypoint='package.sema'"),
+            ("package.sema", DOCUMENTED.as_bytes()),
+            ("vendor/big.sema", &oversized),
+            ("tests/latin1.sema", b"; caf\xe9\n"),
+        ]));
+        assert_eq!(document.status, Status::Ready, "{}", document.message);
+        assert_eq!(document.source.unwrap().path, "package.sema");
+    }
+    #[test]
+    fn unreadable_entrypoint_is_unsupported_with_its_reason() {
+        let document = capture(&archive_bytes(&[
+            ("sema.toml", b"[package]\nentrypoint='package.sema'"),
+            ("package.sema", b"; caf\xe9\n"),
+        ]));
+        assert_eq!(document.status, Status::Unsupported);
+        assert!(
+            document.message.contains("not valid UTF-8"),
+            "{}",
+            document.message
+        );
+        let oversized = " ".repeat(MAX_SOURCE_BYTES as usize + 1);
+        let document = package(&oversized);
+        assert_eq!(document.status, Status::Unsupported);
+        assert!(document.message.contains("512 KiB"), "{}", document.message);
     }
     fn package(source: &str) -> ApiDocument {
         capture(&archive(&[

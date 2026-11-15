@@ -475,9 +475,18 @@ async fn package_page(
             .flatten(),
         None => None,
     };
-    let readme_html = docs
-        .as_ref()
-        .and_then(|release| release.readme_html.clone());
+    let default_release_id =
+        dal::versions::default_release_candidate(&version_models).map(|release| release.version.id);
+    let readme_html = selected_model.as_ref().and_then(|release| {
+        dal::versions::readme_for_release(
+            docs.as_ref().and_then(|docs| docs.readme_html.clone()),
+            release.id,
+            &release.published_at,
+            default_release_id,
+            pkg.readme_html.as_deref(),
+            state.release_docs_since.as_deref(),
+        )
+    });
     let changelog_html = docs
         .as_ref()
         .and_then(|release| release.changelog_html.clone());
