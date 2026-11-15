@@ -455,7 +455,7 @@
       <div class="sidebar-link" data-testid="nav-audit" :class="tab === 'audit' && 'active'" @click="switchTab('audit')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h9v1H2V9zm0 3h7v1H2v-1z"/></svg>
         Audit Log
-        <span class="sidebar-count" x-text="auditLog.length || ''"></span>
+        <span class="sidebar-count" x-show="auditLog.length > 0" x-text="auditLog.length" x-cloak></span>
       </div>
     </div>
     <div class="sidebar-section">
@@ -463,12 +463,12 @@
       <div class="sidebar-link" data-testid="nav-users" :class="tab === 'users' && 'active'" @click="switchTab('users')">
         <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.5-5 6-5s6 2 6 5H2z"/></svg>
         Users
-        <span class="sidebar-count" x-text="stats.total_users || ''"></span>
+        <span class="sidebar-count" x-show="stats.total_users > 0" x-text="stats.total_users" x-cloak></span>
       </div>
       <div class="sidebar-link" data-testid="nav-packages" :class="tab === 'packages' && 'active'" @click="switchTab('packages')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L1 4.5v7L8 15l7-3.5v-7L8 1zM8 8L2 5l6-3 6 3-6 3z"/></svg>
         Packages
-        <span class="sidebar-count" x-text="stats.total_packages || ''"></span>
+        <span class="sidebar-count" x-show="stats.total_packages > 0" x-text="stats.total_packages" x-cloak></span>
       </div>
     </div>
     <div class="sidebar-section">
@@ -476,7 +476,7 @@
       <div class="sidebar-link" data-testid="nav-reports" :class="tab === 'reports' && 'active'" @click="switchTab('reports')">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.5 4h1v4h-1V5zm0 5h1v1h-1v-1z"/></svg>
         Reports
-        <span class="sidebar-count" style="color:var(--error);" x-text="stats.open_reports || ''"></span>
+        <span class="sidebar-count" style="color:var(--error);" x-show="stats.open_reports > 0" x-text="stats.open_reports" x-cloak></span>
       </div>
     </div>
   </nav>
