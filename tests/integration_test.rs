@@ -3448,3 +3448,17 @@ async fn test_release_history_pagination_keeps_selected_release_and_bounds_rows(
     assert!(html.contains("sema pkg add paged-history@1.122.0"));
     assert!(html.contains("Documentation for release 122"));
 }
+
+#[tokio::test]
+async fn test_release_docs_since_reads_the_m010_apply_time() {
+    let (_app, state, _dir) = common::test_app_with_state().await;
+    let since = state
+        .release_docs_since
+        .as_deref()
+        .expect("m010_release_metadata is applied during startup");
+    // `YYYY-MM-DD HH:MM:SS`, the schema's canonical timestamp form, so it
+    // compares lexicographically with `package_versions.published_at`.
+    assert_eq!(since.len(), 19, "unexpected timestamp form: {since}");
+    assert_eq!(&since[4..5], "-");
+    assert_eq!(&since[10..11], " ");
+}

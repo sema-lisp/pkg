@@ -12,6 +12,14 @@ pub fn now() -> String {
     fmt_timestamp(OffsetDateTime::now_utc())
 }
 
+/// A Unix timestamp (seconds) as `YYYY-MM-DD HH:MM:SS` UTC, or `None` when it
+/// is out of range.
+pub fn from_unix(seconds: i64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()
+        .map(fmt_timestamp)
+}
+
 /// Current UTC date as `YYYY-MM-DD`.
 pub fn today() -> String {
     fmt_date(OffsetDateTime::now_utc())

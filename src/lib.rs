@@ -47,6 +47,9 @@ pub struct AppState {
     pub sitemap_cache: web::sitemap::SitemapCache,
     /// TTL cache for the rendered recently-updated feeds (RSS + Atom).
     pub recent_feed_cache: web::feeds::RecentFeedCache,
+    /// When per-release README capture started; see
+    /// [`dal::versions::release_docs_since`].
+    pub release_docs_since: Option<String>,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {

@@ -84,6 +84,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
 
     let blobs =
         sema_pkg::blob::BlobStore::from_config(&config).expect("Failed to initialize blob store");
+    let release_docs_since = sema_pkg::dal::versions::release_docs_since(&db).await;
     let state = Arc::new(AppState {
         db,
         config,
@@ -92,6 +93,7 @@ async fn test_app_inner(rate_limit_enabled: bool) -> (Router, Arc<AppState>, Tem
         stats_cache: Default::default(),
         sitemap_cache: Default::default(),
         recent_feed_cache: Default::default(),
+        release_docs_since,
     });
     let app = build_router(state.clone());
     (app, state, dir)
